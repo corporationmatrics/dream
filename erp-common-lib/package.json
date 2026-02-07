@@ -1,0 +1,38 @@
+{
+  "name": "@erp-platform/common-lib",
+  "version": "1.0.0",
+  "description": "Shared utilities, types, and constants for ERP Platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.5",
+    "@types/node": "^20.8.0",
+    "@typescript-eslint/eslint-plugin": "^6.7.5",
+    "@typescript-eslint/parser": "^6.7.5",
+    "eslint": "^8.51.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.0.3",
+    "ts-jest": "^29.1.1",
+    "typescript": "^5.2.2"
+  },
+  "keywords": [
+    "erp",
+    "shared-library",
+    "types",
+    "utils"
+  ],
+  "author": "ERP Platform Team",
+  "license": "MIT"
+}

@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: erp-config
+  namespace: erp-platform
+data:
+  DATABASE_HOST: postgres
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: erp_platform
+  CACHE_HOST: keydb
+  CACHE_PORT: "6379"
+  STORAGE_HOST: minio
+  STORAGE_PORT: "9000"
+  SEARCH_HOST: meilisearch
+  SEARCH_PORT: "7700"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: erp-secrets
+  namespace: erp-platform
+type: Opaque
+stringData:
+  DATABASE_USER: postgres
+  DATABASE_PASSWORD: postgres
+  MINIO_ROOT_USER: minioadmin
+  MINIO_ROOT_PASSWORD: minioadmin
+  JWT_SECRET: your-secret-key-here

@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "erp-ml"
+version = "1.0.0"
+description = "Machine Learning models for ERP Platform"
+authors = ["ERP Platform Team <dev@erp-platform.local>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "erp_ml"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.0"
+uvicorn = "^0.24.0"
+numpy = "^1.24.0"
+pandas = "^2.1.0"
+scikit-learn = "^1.3.0"
+tensorflow = "^2.14.0"
+pydantic = "^2.4.0"
+pydantic-settings = "^2.0.0"
+python-dotenv = "^1.0.0"
+sqlalchemy = "^2.0.0"
+psycopg2-binary = "^2.9.0"
+easyocr = "^1.7.0"
+pytesseract = "^0.3.10"
+pyzbar = "^0.1.9"
+pdfplumber = "^0.10.0"
+pillow = "^10.0.0"
+opencv-python = "^4.8.0"
+python-dateutil = "^2.8.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.10.0"
+ruff = "^0.11.0"
+mypy = "^1.6.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

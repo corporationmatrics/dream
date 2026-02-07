@@ -1,0 +1,27 @@
+{
+  "name": "erp-docs",
+  "version": "1.0.0",
+  "description": "Documentation for ERP Platform",
+  "private": true,
+  "scripts": {
+    "docusaurus": "docusaurus",
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "swizzle": "docusaurus swizzle",
+    "deploy": "docusaurus deploy",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.0.0",
+    "@docusaurus/preset-classic": "^3.0.0",
+    "@docusaurus/module-ideal-image": "^3.0.0",
+    "clsx": "^2.0.0",
+    "prism-react-renderer": "^2.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@docusaurus/types": "^3.0.0"
+  }
+}

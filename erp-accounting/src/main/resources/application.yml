@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: erp-accounting
+  datasource:
+    url: jdbc:postgresql://localhost:5432/erp_accounting
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: validate
+server:
+  port: 8080

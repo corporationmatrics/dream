@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+*.sql.gz
+backups/
+.env
+.env.local

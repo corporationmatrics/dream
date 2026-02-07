@@ -1,0 +1,10 @@
+{
+  "env": {
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {
+      "distribution": "store"
+    }
+  }
+}
