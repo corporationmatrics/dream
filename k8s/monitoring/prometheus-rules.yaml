@@ -1,0 +1,215 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dream-erp-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: dream-erp.rules
+      interval: 30s
+      rules:
+        # API Service Alerts
+        - alert: APIServiceDown
+          expr: up{job="api"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: api
+          annotations:
+            summary: "API service is down"
+            description: "API service pod is not responding to health checks"
+
+        - alert: APIHighLatency
+          expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="api"}[5m])) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "API response time is high"
+            description: "P95 latency is {{ $value }}s, threshold is 0.5s"
+
+        - alert: APIHighErrorRate
+          expr: rate(http_requests_total{service="api",status=~"5.."}[5m]) > 0.01
+          for: 3m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "API has high error rate"
+            description: "Error rate is {{ $value | humanizePercentage }}"
+
+        # Accounting Service Alerts
+        - alert: AccountingServiceDown
+          expr: up{job="accounting"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: accounting
+          annotations:
+            summary: "Accounting service is down"
+            description: "Accounting service pod is not responding"
+
+        - alert: AccountingHighLatency
+          expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="accounting"}[5m])) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            service: accounting
+          annotations:
+            summary: "Accounting response time is high"
+            description: "P95 latency is {{ $value }}s, threshold is 1.0s"
+
+        # Database Alerts
+        - alert: PostgresHighConnections
+          expr: pg_stat_activity_count / pg_settings_max_connections > 0.8
+          for: 5m
+          labels:
+            severity: warning
+            service: postgres
+          annotations:
+            summary: "PostgreSQL connection pool near capacity"
+            description: "{{ $value | humanizePercentage }} of connections in use"
+
+        - alert: PostgresSlowQueries
+          expr: rate(pg_slow_queries_total[5m]) > 1
+          for: 5m
+          labels:
+            severity: warning
+            service: postgres
+          annotations:
+            summary: "PostgreSQL has slow queries"
+            description: "{{ $value }} slow queries per second"
+
+        - alert: PostgresReplicationLag
+          expr: pg_replication_lag_seconds > 30
+          for: 5m
+          labels:
+            severity: warning
+            service: postgres
+          annotations:
+            summary: "PostgreSQL replication lag too high"
+            description: "Replication lag is {{ $value }}s"
+
+        # Redis/Valkey Alerts
+        - alert: RedisHighMemoryUsage
+          expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            service: redis
+          annotations:
+            summary: "Redis memory usage is high"
+            description: "Memory usage is {{ $value | humanizePercentage }}"
+
+        - alert: RedisEvictions
+          expr: rate(redis_evicted_keys_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: redis
+          annotations:
+            summary: "Redis is evicting keys"
+            description: "Keys are being evicted at {{ $value }} per second"
+
+        # B2B Integration Alerts
+        - alert: WebhookDeliveryFailure
+          expr: rate(b2b_webhook_failed_total[5m]) / rate(b2b_webhook_attempted_total[5m]) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+            service: b2b-integration
+          annotations:
+            summary: "B2B webhook delivery failure rate is high"
+            description: "{{ $value | humanizePercentage }} of webhooks are failing"
+
+        - alert: DeadLetterQueueGrowing
+          expr: increase(b2b_webhook_dead_letter_total[30m]) > 10
+          labels:
+            severity: critical
+            service: b2b-integration
+          annotations:
+            summary: "B2B dead letter queue is growing"
+            description: "{{ $value }} messages moved to DLQ in last 30m"
+
+        - alert: POProcessingDelayed
+          expr: histogram_quantile(0.95, rate(po_processing_duration_seconds_bucket[5m])) > 1.0
+          for: 10m
+          labels:
+            severity: warning
+            service: b2b-integration
+          annotations:
+            summary: "PO processing time is high"
+            description: "P95 processing time is {{ $value }}s"
+
+        - alert: InvoiceGenerationFailure
+          expr: rate(invoice_generation_failed_total[5m]) > 0.001
+          for: 5m
+          labels:
+            severity: warning
+            service: b2b-integration
+          annotations:
+            summary: "Invoice generation is failing"
+            description: "Failure rate is {{ $value }}/s"
+
+        # Kubernetes Alerts
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod is crash looping"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting"
+
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kubernetes node is not ready"
+            description: "Node {{ $labels.node }} is in NotReady state"
+
+---
+apiVersion: alertmanager.config/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: dream-erp-alerts
+  namespace: monitoring
+spec:
+  route:
+    receiver: default
+    routes:
+      - matcher:
+          severity: critical
+        receiver: critical
+        groupBy: [alertname, service]
+        groupWait: 30s
+        groupInterval: 2m
+        repeatInterval: 4h
+
+      - matcher:
+          severity: warning
+        receiver: warnings
+        groupWait: 1m
+        groupInterval: 10m
+        repeatInterval: 12h
+
+  receivers:
+    - name: default
+      pushoverConfig:
+        - userKey: ${PUSHOVER_USER_KEY}
+          apiToken: ${PUSHOVER_API_TOKEN}
+
+    - name: critical
+      pagerdutyConfigs:
+        - serviceKey: ${PAGERDUTY_SERVICE_KEY}
+          description: "{{ .GroupLabels.alertname }}: {{ .Alerts.Firing | len }} alerts"
+
+    - name: warnings
+      slackConfigs:
+        - apiUrl: ${SLACK_WEBHOOK_URL}
+          channel: '#dream-erp-alerts'
+          title: 'Dream ERP Warning'
+          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'

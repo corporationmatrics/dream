@@ -1,0 +1,286 @@
+name: Load Testing - K6 Performance
+
+on:
+  schedule:
+    # Run load tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      vus:
+        description: 'Virtual users'
+        required: false
+        default: '100'
+      duration:
+        description: 'Test duration (e.g., 5m, 10m)'
+        required: false
+        default: '5m'
+
+env:
+  K6_VERSION: v0.47.0
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'staging' }}
+  VUS: ${{ github.event.inputs.vus || '100' }}
+  DURATION: ${{ github.event.inputs.duration || '5m' }}
+
+jobs:
+  load-test:
+    name: K6 Load Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup K6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-transport-https
+          echo "deb [signed-by=/usr/share/keyrings/grafana_keyring.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+          curl https://apt.grafana.com/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/grafana_keyring.gpg
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Determine API URL
+        run: |
+          if [ "${{ env.ENVIRONMENT }}" == "staging" ]; then
+            echo "API_URL=https://api-staging.dream-erp.local" >> $GITHUB_ENV
+            echo "ACCOUNTING_URL=https://accounting-staging.dream-erp.local" >> $GITHUB_ENV
+          else
+            echo "API_URL=https://api.dream-erp.local" >> $GITHUB_ENV
+            echo "ACCOUNTING_URL=https://accounting.dream-erp.local" >> $GITHUB_ENV
+          fi
+
+      - name: Create test script
+        run: |
+          cat > k6-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, group } from 'k6';
+          import { Rate, Trend, Counter, Gauge } from 'k6/metrics';
+          
+          // Custom metrics
+          const errorRate = new Rate('errors');
+          const latencyTrend = new Trend('latency');
+          const requestCount = new Counter('requests');
+          const concurrentUsers = new Gauge('concurrent_users');
+          
+          const API_URL = __ENV.API_URL || 'https://api-staging.dream-erp.local';
+          const ACCOUNTING_URL = __ENV.ACCOUNTING_URL || 'https://accounting-staging.dream-erp.local';
+          
+          export const options = {
+            vus: parseInt(__ENV.VUS) || 100,
+            duration: __ENV.DURATION || '5m',
+            thresholds: {
+              'http_req_duration': ['p(95)<500', 'p(99)<1000'],
+              'http_req_failed': ['rate<0.1'],
+              'errors': ['rate<0.1'],
+            },
+            stages: [
+              { duration: '1m', target: parseInt(__ENV.VUS) / 2 },        // Ramp-up
+              { duration: '3m', target: parseInt(__ENV.VUS) },             // Steady state
+              { duration: '1m', target: parseInt(__ENV.VUS) / 2 },        // Ramp-down
+            ],
+          };
+          
+          export default function () {
+            // Simulate PO submission workflow
+            group('Health Check', () => {
+              let res = http.get(`${API_URL}/health`);
+              check(res, {
+                'health check status is 200': (r) => r.status === 200,
+              });
+              latencyTrend.add(res.timings.duration);
+              requestCount.add(1);
+              errorRate.add(res.status !== 200 && res.status !== 202);
+            });
+          
+            group('PO Intake Workflow', () => {
+              const poPayload = JSON.stringify({
+                po_header: {
+                  po_number: `PO-LOAD-${__VU}-${__ITER}`,
+                  po_date: new Date().toISOString(),
+                  sender: {
+                    company_name: 'Test Vendor',
+                    gst_in: '29AABCT1234F1Z5',
+                  },
+                  recipient: {
+                    company_name: 'Main Company',
+                    gst_in: '29AABCU0000F1Z0',
+                  },
+                },
+                po_lines: [
+                  {
+                    line_number: 1,
+                    material_id: 'MAT-001',
+                    quantity: Math.floor(Math.random() * 100) + 10,
+                    unit_price: 50,
+                    gst_percentage: 18,
+                  },
+                ],
+              });
+          
+              let res = http.post(
+                `${API_URL}/b2b/po/submit`,
+                poPayload,
+                {
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Partner-ID': 'VENDOR-TEST-001',
+                    'X-API-Key': __ENV.API_KEY || 'test-key',
+                  },
+                  timeout: '30s',
+                }
+              );
+          
+              check(res, {
+                'PO submission accepted': (r) => r.status === 202 || r.status === 201,
+                'has reference number': (r) => r.body.includes('reference_number'),
+              });
+          
+              latencyTrend.add(res.timings.duration);
+              requestCount.add(1);
+              errorRate.add(res.status < 200 || res.status >= 300);
+              concurrentUsers.add(__VU);
+            });
+          
+            group('Invoice Generation Workflow', () => {
+              let res = http.post(
+                `${API_URL}/b2b/invoice/generate`,
+                JSON.stringify({
+                  po_id: `PO-LOAD-${__VU}-${__ITER}`,
+                  invoice_date: new Date().toISOString(),
+                }),
+                {
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Partner-ID': 'VENDOR-TEST-001',
+                  },
+                  timeout: '30s',
+                }
+              );
+          
+              check(res, {
+                'invoice generation accepted': (r) => r.status === 202 || r.status === 201,
+                'has invoice number': (r) => r.body.includes('invoice_number'),
+              });
+          
+              latencyTrend.add(res.timings.duration);
+              requestCount.add(1);
+              errorRate.add(res.status < 200 || res.status >= 300);
+            });
+          
+            group('Accounting Ledger Posting', () => {
+              let res = http.post(
+                `${ACCOUNTING_URL}/api/ledger/post`,
+                JSON.stringify({
+                  document_id: `INV-LOAD-${__VU}-${__ITER}`,
+                  amount: Math.floor(Math.random() * 10000) + 1000,
+                  currency: 'INR',
+                }),
+                {
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  timeout: '30s',
+                }
+              );
+          
+              check(res, {
+                'ledger posting accepted': (r) => r.status === 200 || r.status === 202,
+              });
+          
+              latencyTrend.add(res.timings.duration);
+              requestCount.add(1);
+              errorRate.add(res.status < 200 || res.status >= 300);
+            });
+          }
+          EOF
+
+      - name: Run load test
+        run: |
+          k6 run \
+            -e VUS=${{ env.VUS }} \
+            -e DURATION=${{ env.DURATION }} \
+            -e API_URL=${{ env.API_URL }} \
+            -e ACCOUNTING_URL=${{ env.ACCOUNTING_URL }} \
+            --out json=/tmp/results.json \
+            k6-test.js || true
+
+      - name: Generate HTML report
+        if: always()
+        run: |
+          cat > /tmp/parse-results.js << 'EOF'
+          const fs = require('fs');
+          const data = fs.readFileSync('/tmp/results.json', 'utf-8')
+            .split('\n')
+            .filter(l => l)
+            .map(l => JSON.parse(l));
+          
+          const metrics = {};
+          data.forEach(event => {
+            if (event.type === 'Metric') {
+              metrics[event.data.name] = event.data;
+            }
+          });
+          
+          console.log('K6 Load Test Results:');
+          console.log(`- Total Requests: ${metrics.requests?.data?.count || 'N/A'}`);
+          console.log(`- Error Rate: ${metrics.errors?.data?.rate || 'N/A'}`);
+          console.log(`- Latency (p95): ${metrics.latency?.data?.p95 || 'N/A'}ms`);
+          EOF
+
+      - name: Upload results to artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results-${{ env.ENVIRONMENT }}
+          path: /tmp/results.json
+          retention-days: 30
+
+      - name: Comment on workflow
+        if: always()
+        run: |
+          echo "## 📊 Load Test Results"
+          echo "- Environment: ${{ env.ENVIRONMENT }}"
+          echo "- Virtual Users: ${{ env.VUS }}"
+          echo "- Duration: ${{ env.DURATION }}"
+          echo "- Status: ${{ job.status }}"
+          echo ""
+          echo "See artifacts for detailed results"
+
+  performance-analysis:
+    name: Performance Analysis
+    runs-on: ubuntu-24.04
+    needs: load-test
+    if: always()
+    timeout-minutes: 10
+
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          name: k6-results-${{ env.ENVIRONMENT }}
+
+      - name: Analyze performance
+        run: |
+          echo "## Performance Analysis"
+          echo ""
+          echo "✅ Load tests completed"
+          echo "📊 Results available in artifacts"
+          echo ""
+          echo "**Performance Targets:**"
+          echo "- API response time (p95): < 500ms"
+          echo "- Error rate: < 1%"
+          echo "- Throughput: > 100 requests/second"
+
+      - name: Post to monitoring
+        run: |
+          echo "Posting load test results to monitoring system..."
+          # Would integrate with Prometheus, Grafana, or custom dashboard

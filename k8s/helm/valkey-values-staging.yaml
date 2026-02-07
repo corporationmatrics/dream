@@ -1,0 +1,41 @@
+# Redis (Valkey) Helm chart values for staging environment
+architecture: standalone
+
+auth:
+  enabled: true
+  password: staging-redis-password
+
+master:
+  persistence:
+    enabled: true
+    storageClass: "local-path"
+    size: 5Gi
+    path: /data
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  command: /run.sh
+  arguments:
+    - --maxmemory 256mb
+    - --maxmemory-policy allkeys-lru
+
+replica:
+  enabled: false
+  replicaCount: 0
+
+sentinel:
+  enabled: false
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+
+backup:
+  enabled: false

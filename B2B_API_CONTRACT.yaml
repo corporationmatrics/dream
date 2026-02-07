@@ -1,0 +1,470 @@
+openapi: 3.0.3
+info:
+  title: "Dream ERP B2B Integration API"
+  description: "JSON-EDI Protocol for B2B Purchase Orders, Invoices, and Ledger Integration"
+  version: "1.0.0"
+  contact:
+    name: "Dream ERP Platform"
+    email: "integration@dream-erp.com"
+
+servers:
+  - url: "https://api.dream-erp.com/v1"
+    description: "Production API"
+  - url: "https://staging-api.dream-erp.com/v1"
+    description: "Staging (Testing) API"
+
+security:
+  - BearerAuth: []
+  - OAuth2: [read, write]
+
+tags:
+  - name: "B2B Purchase Orders"
+    description: "Purchase Order intake and acknowledgment"
+  - name: "Invoices"
+    description: "Invoice issuance and tracking"
+  - name: "Webhooks"
+    description: "Webhook configuration and management"
+
+paths:
+  /b2b/purchase-orders:
+    post:
+      tags:
+        - "B2B Purchase Orders"
+      summary: "Submit a new Purchase Order"
+      description: |
+        Submit a purchase order in JSON-EDI format. The system will:
+        1. Validate the PO structure
+        2. Check inventory availability
+        3. Create internal order
+        4. Send acknowledgment via webhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrder'
+            examples:
+              standard:
+                $ref: '#/components/examples/PurchaseOrderExample'
+      responses:
+        '202':
+          description: "Purchase Order accepted for processing"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderResponse'
+        '400':
+          description: "Invalid PO format or missing required fields"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: "Unauthorized - Invalid API key or OAuth token"
+        '429':
+          description: "Rate limit exceeded (100 POs/min per partner)"
+
+  /b2b/purchase-orders/{poNumber}/acknowledge:
+    post:
+      tags:
+        - "B2B Purchase Orders"
+      summary: "Acknowledge a received Purchase Order"
+      parameters:
+        - name: "poNumber"
+          in: "path"
+          required: true
+          schema:
+            type: string
+            example: "PO-2026-001234"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderAcknowledgment'
+      responses:
+        '200':
+          description: "Acknowledgment received and processed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgmentResponse'
+        '404':
+          description: "Purchase Order not found"
+        '409':
+          description: "PO already acknowledged or in processing"
+
+  /b2b/orders/{orderId}/status:
+    get:
+      tags:
+        - "B2B Purchase Orders"
+      summary: "Track order status"
+      parameters:
+        - name: "orderId"
+          in: "path"
+          required: true
+          schema:
+            type: string
+            example: "ORD-2026-100234"
+      responses:
+        '200':
+          description: "Current order status"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderStatus'
+
+  /b2b/invoices:
+    get:
+      tags:
+        - "Invoices"
+      summary: "List invoices for your POs"
+      parameters:
+        - name: "status"
+          in: "query"
+          schema:
+            type: string
+            enum: [ISSUED, PAID, OVERDUE]
+          example: "ISSUED"
+        - name: "limit"
+          in: "query"
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: "List of invoices"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Invoice'
+
+  /b2b/invoices/{invoiceId}:
+    get:
+      tags:
+        - "Invoices"
+      summary: "Get detailed invoice information"
+      parameters:
+        - name: "invoiceId"
+          in: "path"
+          required: true
+          schema:
+            type: string
+            example: "INV-2026-005678"
+      responses:
+        '200':
+          description: "Invoice details"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceDetailed'
+
+  /b2b/webhooks:
+    post:
+      tags:
+        - "Webhooks"
+      summary: "Register webhook URL for real-time notifications"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRegistration'
+      responses:
+        '201':
+          description: "Webhook registered successfully"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "OAuth2 JWT token from Keycloak"
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: "https://auth.dream-erp.com/oauth2/authorize"
+          tokenUrl: "https://auth.dream-erp.com/oauth2/token"
+          scopes:
+            read: "Read purchase orders and invoices"
+            write: "Create and acknowledge purchase orders"
+
+  schemas:
+    PurchaseOrder:
+      type: object
+      required: [message_type, sender, po_header, po_lines, po_summary]
+      properties:
+        message_type:
+          type: string
+          enum: [purchase_order]
+        message_version:
+          type: string
+          default: "1.0"
+        timestamp:
+          type: string
+          format: date-time
+        sender:
+          $ref: '#/components/schemas/Party'
+        receiver:
+          $ref: '#/components/schemas/Party'
+        po_header:
+          $ref: '#/components/schemas/POHeader'
+        po_lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/POLine'
+        po_summary:
+          $ref: '#/components/schemas/POSummary'
+
+    POHeader:
+      type: object
+      required: [po_number, po_date, currency]
+      properties:
+        po_number:
+          type: string
+          example: "PO-2026-001234"
+        po_date:
+          type: string
+          format: date
+        delivery_date:
+          type: string
+          format: date
+        currency:
+          type: string
+          enum: [INR, USD, EUR]
+        payment_terms:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [NET_30, NET_60, COD]
+            discount_percentage:
+              type: number
+
+    POLine:
+      type: object
+      required: [line_number, product_id, qty, unit_price, tax_rate]
+      properties:
+        line_number:
+          type: integer
+        product_id:
+          type: string
+        qty:
+          type: number
+        unit:
+          type: string
+          enum: [PCS, BOX, KG, L]
+        unit_price:
+          type: number
+        tax_rate:
+          type: number
+        delivery_date:
+          type: string
+          format: date
+
+    POSummary:
+      type: object
+      properties:
+        subtotal:
+          type: number
+        tax_total:
+          type: number
+        shipping_charges:
+          type: number
+        grand_total:
+          type: number
+
+    Party:
+      type: object
+      required: [party_id, party_name]
+      properties:
+        party_id:
+          type: string
+          example: "B2B_PARTNER_001"
+        party_name:
+          type: string
+          example: "Acme Corp"
+        contact_email:
+          type: string
+          format: email
+        webhook_url:
+          type: string
+          format: uri
+
+    PurchaseOrderAcknowledgment:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ACKNOWLEDGED, REJECTED, PARTIAL]
+        acknowledgment_date:
+          type: string
+          format: date-time
+        line_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              line_number:
+                type: integer
+              qty_confirmed:
+                type: number
+              qty_backorder:
+                type: number
+
+    PurchaseOrderResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ACCEPTED, PROCESSING, COMPLETED]
+        internal_order_id:
+          type: string
+          example: "ORD-2026-100234"
+        message_id:
+          type: string
+        estimated_ship_date:
+          type: string
+          format: date
+
+    AcknowledgmentResponse:
+      type: object
+      properties:
+        acknowledged:
+          type: boolean
+        po_number:
+          type: string
+        internal_order_id:
+          type: string
+        acknowledgment_timestamp:
+          type: string
+          format: date-time
+
+    OrderStatus:
+      type: object
+      properties:
+        order_id:
+          type: string
+        po_reference:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, SHIPPED, DELIVERED, INVOICED]
+        last_updated:
+          type: string
+          format: date-time
+        tracking_info:
+          type: object
+          properties:
+            carrier:
+              type: string
+            tracking_number:
+              type: string
+
+    Invoice:
+      type: object
+      properties:
+        invoice_number:
+          type: string
+        invoice_date:
+          type: string
+          format: date
+        po_reference:
+          type: string
+        status:
+          type: string
+          enum: [ISSUED, PAID, OVERDUE]
+        total_amount:
+          type: number
+        amount_due:
+          type: number
+
+    InvoiceDetailed:
+      allOf:
+        - $ref: '#/components/schemas/Invoice'
+        - type: object
+          properties:
+            invoice_lines:
+              type: array
+              items:
+                type: object
+            tax_details:
+              type: object
+            payment_terms:
+              type: object
+
+    WebhookRegistration:
+      type: object
+      required: [webhook_url, events]
+      properties:
+        webhook_url:
+          type: string
+          format: uri
+          example: "https://partner.com/api/webhooks/erp"
+        events:
+          type: array
+          items:
+            type: string
+            enum: [po.received, po.acknowledged, order.shipped, invoice.issued, payment.received]
+        active:
+          type: boolean
+          default: true
+
+    WebhookResponse:
+      type: object
+      properties:
+        webhook_id:
+          type: string
+        webhook_url:
+          type: string
+        status:
+          type: string
+        registered_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error_code:
+          type: string
+        error_message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+
+  examples:
+    PurchaseOrderExample:
+      value:
+        message_type: "purchase_order"
+        message_version: "1.0"
+        timestamp: "2026-02-07T10:30:00Z"
+        sender:
+          party_id: "B2B_PARTNER_001"
+          party_name: "Acme Corp"
+          webhook_url: "https://acme.com/api/webhooks/erp"
+        po_header:
+          po_number: "PO-2026-001234"
+          po_date: "2026-02-07"
+          currency: "INR"
+        po_lines:
+          - line_number: 1
+            product_id: "SKU-12345"
+            qty: 100
+            unit_price: 150
+            tax_rate: 0.18
+        po_summary:
+          subtotal: 15000
+          tax_total: 2700
+          grand_total: 17700

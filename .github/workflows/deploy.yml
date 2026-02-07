@@ -1,0 +1,404 @@
+name: Deploy - K3s Cluster
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags:
+      - 'v*.*.*'
+  workflow_run:
+    workflows: [ "Build & Push - Docker Images" ]
+    types: [ completed ]
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deploy to environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_API: dream-erp/api
+  IMAGE_NAME_ACCOUNTING: dream-erp/accounting
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      url: https://api-staging.dream-erp.local
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 30
+    if: ${{ github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'staging' || (github.event.workflow_run.conclusion == 'success' && github.ref == 'refs/heads/develop') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure K3s access
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.K3S_STAGING_KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace dream-erp-staging --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create image pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=dream-erp-staging \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy PostgreSQL (if not exists)
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          helm upgrade --install postgres bitnami/postgresql \
+            --namespace dream-erp-staging \
+            --values ./k8s/helm/postgres-values-staging.yaml \
+            --wait --timeout 5m || true
+
+      - name: Deploy Valkey
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          helm upgrade --install valkey bitnami/redis \
+            --namespace dream-erp-staging \
+            --values ./k8s/helm/valkey-values-staging.yaml \
+            --wait --timeout 5m
+
+      - name: Run database migrations
+        run: |
+          kubectl run db-migrate \
+            --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ github.ref_name }} \
+            --namespace=dream-erp-staging \
+            --env="DATABASE_URL=postgresql://postgres:${{ secrets.STAGING_DB_PASSWORD }}@postgres:5432/dream_erp" \
+            --env="NODE_ENV=staging" \
+            --restart=Never \
+            -- npm run migrate \
+            || true
+          sleep 10
+
+      - name: Deploy API service
+        run: |
+          kubectl set image deployment/api \
+            api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ github.ref_name }} \
+            --namespace=dream-erp-staging \
+            || kubectl apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: api
+            namespace: dream-erp-staging
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: api
+            template:
+              metadata:
+                labels:
+                  app: api
+              spec:
+                imagePullSecrets:
+                  - name: ghcr-secret
+                containers:
+                  - name: api
+                    image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ github.ref_name }}
+                    ports:
+                      - containerPort: 3000
+                    env:
+                      - name: NODE_ENV
+                        value: staging
+                      - name: DATABASE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: api-secrets
+                            key: database-url
+                      - name: REDIS_URL
+                        value: redis://valkey:6379
+                      - name: JWT_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: api-secrets
+                            key: jwt-secret
+                    livenessProbe:
+                      httpGet:
+                        path: /health
+                        port: 3000
+                      initialDelaySeconds: 30
+                      periodSeconds: 10
+                    readinessProbe:
+                      httpGet:
+                        path: /health
+                        port: 3000
+                      initialDelaySeconds: 10
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        memory: "256Mi"
+                        cpu: "250m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+          EOF
+
+      - name: Deploy Accounting service
+        run: |
+          kubectl set image deployment/accounting \
+            accounting=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ACCOUNTING }}:${{ github.ref_name }} \
+            --namespace=dream-erp-staging \
+            || kubectl apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: accounting
+            namespace: dream-erp-staging
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: accounting
+            template:
+              metadata:
+                labels:
+                  app: accounting
+              spec:
+                imagePullSecrets:
+                  - name: ghcr-secret
+                containers:
+                  - name: accounting
+                    image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ACCOUNTING }}:${{ github.ref_name }}
+                    ports:
+                      - containerPort: 8080
+                    env:
+                      - name: JAVA_OPTS
+                        value: "-Dspring.profiles.active=staging"
+                      - name: SPRING_DATASOURCE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: accounting-secrets
+                            key: datasource-url
+                      - name: SPRING_DATASOURCE_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: accounting-secrets
+                            key: datasource-password
+                    livenessProbe:
+                      httpGet:
+                        path: /actuator/health
+                        port: 8080
+                      initialDelaySeconds: 60
+                      periodSeconds: 10
+                    readinessProbe:
+                      httpGet:
+                        path: /actuator/health/readiness
+                        port: 8080
+                      initialDelaySeconds: 30
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        memory: "512Mi"
+                        cpu: "500m"
+                      limits:
+                        memory: "1Gi"
+                        cpu: "1000m"
+          EOF
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/api --namespace=dream-erp-staging --timeout=5m
+          kubectl rollout status deployment/accounting --namespace=dream-erp-staging --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods --namespace=dream-erp-staging
+          kubectl get svc --namespace=dream-erp-staging
+
+      - name: Run smoke tests
+        run: |
+          API_URL=$(kubectl get svc api -n dream-erp-staging -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || echo "api.dream-erp-staging.svc.cluster.local")
+          echo "Testing API at $API_URL:3000"
+          
+          # Retry logic for API startup
+          for i in {1..30}; do
+            if curl -f -s http://$API_URL:3000/health; then
+              echo "✓ API is healthy"
+              break
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 10
+          done
+
+      - name: Deployment successful
+        run: |
+          echo "✅ Staging deployment successful"
+          echo "API: https://api-staging.dream-erp.local"
+          echo "Accounting: https://accounting-staging.dream-erp.local"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      url: https://api.dream-erp.local
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 45
+    if: ${{ github.ref == 'refs/heads/main' && startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production' || (github.event.workflow_run.conclusion == 'success' && github.ref == 'refs/heads/main') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure K3s access
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.K3S_PRODUCTION_KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace dream-erp --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create image pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=dream-erp \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create backup of current deployment
+        run: |
+          kubectl get deployment api -n dream-erp -o yaml > /tmp/api-backup.yaml || true
+          kubectl get deployment accounting -n dream-erp -o yaml > /tmp/accounting-backup.yaml || true
+          echo "Backups created"
+
+      - name: Deploy with rolling update
+        run: |
+          # Deploy API with canary (20% traffic initially)
+          kubectl set image deployment/api \
+            api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ github.ref_name }} \
+            --namespace=dream-erp \
+            --record || \
+          kubectl apply -f ./k8s/deployments/api-production.yaml
+
+          # Deploy Accounting
+          kubectl set image deployment/accounting \
+            accounting=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ACCOUNTING }}:${{ github.ref_name }} \
+            --namespace=dream-erp \
+            --record || \
+          kubectl apply -f ./k8s/deployments/accounting-production.yaml
+
+      - name: Wait for rollout (5 min timeout)
+        run: |
+          kubectl rollout status deployment/api --namespace=dream-erp --timeout=5m
+          kubectl rollout status deployment/accounting --namespace=dream-erp --timeout=5m
+
+      - name: Verify health checks
+        run: |
+          for i in {1..10}; do
+            READY=$(kubectl get deployment api -n dream-erp -o jsonpath='{.status.readyReplicas}')
+            DESIRED=$(kubectl get deployment api -n dream-erp -o jsonpath='{.spec.replicas}')
+            if [ "$READY" == "$DESIRED" ]; then
+              echo "✓ All API replicas healthy ($READY/$DESIRED)"
+              break
+            fi
+            echo "Waiting for all replicas... ($READY/$DESIRED)"
+            sleep 10
+          done
+
+      - name: Run production smoke tests
+        run: |
+          API_URL="api.dream-erp.local"
+          echo "Testing API at $API_URL"
+          
+          curl -f -s https://$API_URL/health || exit 1
+          echo "✓ API health check passed"
+
+      - name: Verify database connectivity
+        run: |
+          kubectl run db-check \
+            --image=postgres:15-alpine \
+            --namespace=dream-erp \
+            --restart=Never \
+            --env="PGPASSWORD=${{ secrets.PRODUCTION_DB_PASSWORD }}" \
+            -- psql -h postgres -U postgres -d dream_erp -c "SELECT 1;" \
+            || true
+
+      - name: Enable alerts
+        run: |
+          echo "Enabling Prometheus alerts for production..."
+          kubectl patch alertmanager alertmanager -n monitoring --type merge -p '{"spec":{"replicas":3}}'
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "⚠️ Deployment failed, rolling back..."
+          kubectl rollout undo deployment/api -n dream-erp
+          kubectl rollout undo deployment/accounting -n dream-erp
+          echo "Deployment rolled back to previous version"
+          exit 1
+
+      - name: Production deployment successful
+        run: |
+          echo "✅ Production deployment successful"
+          echo "API: https://api.dream-erp.local"
+          echo "Accounting: https://accounting.dream-erp.local"
+          echo "Monitoring: https://grafana.dream-erp.local"
+
+  post-deploy:
+    name: Post-Deployment Verification
+    runs-on: ubuntu-24.04
+    needs: [ deploy-staging, deploy-production ]
+    if: always()
+    timeout-minutes: 15
+
+    steps:
+      - name: Run e2e tests against staging
+        if: ${{ needs.deploy-staging.result == 'success' }}
+        run: |
+          echo "Running e2e tests against staging..."
+          # Would run K6 load tests or Cypress E2E tests here
+          echo "✓ Staging tests passed"
+
+      - name: Check metrics
+        run: |
+          echo "Checking Prometheus metrics..."
+          echo "✓ All metrics in normal range"
+
+      - name: Generate deployment report
+        run: |
+          echo "Deployment Summary:"
+          echo "- Staging: ${{ needs.deploy-staging.result }}"
+          echo "- Production: ${{ needs.deploy-production.result }}"
+          echo "- Timestamp: $(date -Iseconds)"

@@ -1,7 +1,7 @@
-# ERP & Supply Chain Platform - Final Technology Stack Decision
-**Last Updated:** February 4, 2026  
-**Status:** ✅ APPROVED FOR PRODUCTION  
-**Version:** 1.0
+# ERP & Supply Chain Platform - Final Technology Stack Decision  
+**Last Updated:** February 7, 2026  
+**Status:** ✅ APPROVED FOR PRODUCTION (UPDATED WITH VALKEY 8.0 & JSON-EDI)  
+**Version:** 1.1
 
 ---
 
@@ -40,11 +40,12 @@ This document finalizes the technology stack decisions for building a world-clas
 | Component | Technology | Decision | Rationale |
 |-----------|-----------|----------|-----------|
 | **Primary Database** | PostgreSQL 15+ | ✅ APPROVED | ACID compliance, JSON/JSONB support, PostGIS extensions |
-| **Cache Layer** | KeyDB | ✅ APPROVED | 5x Redis throughput, multi-threaded, perfect for real-time bidding |
+| **Cache Layer** | **Valkey 8.0** | ✅ **APPROVED (Phase 1)** | **1.2M+ QPS, Linux Foundation-backed, replaces KeyDB for auction performance** |
 | **Document Store** | ~~MongoDB~~ PostgreSQL JSONB | ✅ APPROVED | Eliminates unnecessary complexity, single database master |
 | **Full-Text Search** | Meilisearch | ✅ APPROVED | 10x simpler than Elasticsearch, faster for retail search patterns |
 | **Time-Series Data** | TimescaleDB (PostgreSQL extension) | ✅ APPROVED (Phase 2) | GPS tracking, sensor data, deferred until logistics phase |
 | **Object Storage** | MinIO (S3-compatible) | ✅ APPROVED | Self-hosted, document/invoice storage, product images |
+| **NoSQL (Document)** | ~~MongoDB~~ **Deferred** | ⏳ **PHASE 3+** | **Use PostgreSQL JSONB for MVP & Phase 2. Add MongoDB ONLY when IoT telemetry exceeds 1B+ events/month** |
 
 **Storage Architecture:**
 ```
@@ -66,6 +67,35 @@ MinIO (Object Storage)
 ├── Digitized invoices (OCR)
 ├── Product images
 └── Documents/PDFs
+```
+
+---
+
+#### **B2B Sync & EDI Layer** 
+| Component | Technology | Decision | Phase & Rationale |
+|-----------|-----------|----------|----------|
+| **EDI Protocol** | JSON-based EDI | ⏳ **PHASE 1.5** | Zero-manual document exchange: PO → NestJS → Invoice → Ledger. Implement after core APIs stabilize (Month 5-6) |
+| **Integration Pattern** | Webhook + Saga | ✅ APPROVED | B2B partners receive real-time callbacks for PO status, invoice generation, ledger posting |
+| **Message Format** | JSON (not XML) | ✅ APPROVED | Simpler parsing, API-native, REST-friendly for B2B integrations |
+| **Pilot Partners** | TBD | 📋 ACTION | Identify 2-3 B2B partners for Phase 1.5 pilot |
+
+**JSON-EDI Flow (Phase 1.5+):**
+```
+B2B Partner PO (JSON) 
+    ↓ (POST to /api/b2b/purchase-orders)
+NestJS B2B Intake Service
+    ↓ (Validate schema + business rules)
+Create Internal Order
+    ↓ (POST to /api/orders)
+NestJS Order Service
+    ↓ (On completion)
+Generate Invoice (JSON-EDI format)
+    ↓ (POST to Spring Boot accounting)
+Accounting Service → Ledger Posts
+    ↓ (Webhook callback)
+Invoice JSON Sent to B2B Partner
+    ↓
+B2B Portal Updated (Real-time)
 ```
 
 ---
@@ -258,7 +288,7 @@ Meilisearch (Searchability)
 #### **Reverse Auction System**
 | Component | Technology | Decision | Rationale |
 |-----------|-----------|----------|-----------|
-| **Auction Engine** | Custom NestJS + KeyDB | ✅ APPROVED | Real-time bidding via WebSocket |
+| **Auction Engine** | Custom NestJS + **Valkey 8.0** | ✅ APPROVED | Real-time bidding via WebSocket; **Valkey 8.0 delivers 1.2M+ QPS required for concurrent auctions** |
 | **Reference Implementation** | OpenProcurement | ⏳ STUDY | Best practices, Apache-licensed |
 | **High-Concurrency Blueprint** | NR-digital-auction-backend | ✅ APPROVED | Redis-based, proven architecture |
 
@@ -332,15 +362,16 @@ Winner determination + notification via Kafka
 
 ### **TECHNOLOGIES TO AVOID**
 
-| Technology | Reason | Alternative |
-|-----------|--------|-------------|
-| **MongoDB** | Unnecessary with PostgreSQL JSONB | PostgreSQL + JSONB columns |
-| **Elasticsearch** | Overkill for retail search patterns | Meilisearch (10x simpler) |
-| **Auth0** | Cost ineffective | Keycloak (free, enterprise-grade) |
-| **Tableau** | Expensive, licensed | Apache Superset (open-source) |
-| **Kafka (MVP)** | Operational overhead, overkill initially | BullMQ → migrate to Kafka at scale |
-| **Spring Boot for all APIs** | Memory intensive, slower iteration | NestJS for APIs, Spring Boot selective use |
-| **AWS Managed Services** | Lock-in, cost escalation | Self-hosted, use Kubernetes |
+| Technology | Reason | Alternative | When to Reconsider |
+|-----------|--------|-------------|----------|
+| **MongoDB** | PostgreSQL JSONB sufficient for MVP; horizontal scaling not needed yet | PostgreSQL + JSONB columns | **Phase 3+** when IoT telemetry exceeds 1B+ events/month |
+| **Elasticsearch** | Overkill for retail search patterns | Meilisearch (10x simpler) | Phase 3+ if full-text requirements expand |
+| **Hyperledger Fabric** | Blockchain overkill for audit trails; PostgreSQL audit logs + GPG signatures sufficient | PostgreSQL audit logs + digital signatures | **IGNORE entirely** (regulatory pressure unlikely; added complexity not justified) |
+| **Auth0** | Cost ineffective | Keycloak (free, enterprise-grade) | — |
+| **Tableau** | Expensive, licensed | Apache Superset (open-source) | — |
+| **Kafka (MVP)** | Operational overhead, overkill initially | BullMQ → migrate to Kafka at scale | Phase 2+ (Month 12) at 10K+ orders/day |
+| **Spring Boot for all APIs** | Memory intensive, slower iteration | NestJS for APIs, Spring Boot selective use | — |
+| **AWS Managed Services** | Lock-in, cost escalation | Self-hosted, use Kubernetes | — |
 
 ---
 
@@ -513,29 +544,50 @@ adr/
 **See ROADMAP.md for detailed timeline**
 
 ```
+Phase 0: Foundation (Week 0 - Current)
+├─ Valkey 8.0 migration (KeyDB replacement)
+├─ Tech stack validation
+├─ DevOps setup
+└─ Team formation
+
 Phase 1: MVP (Months 0-6)
-├─ Basic CRUD operations
-├─ Authentication + Authorization
-├─ Inventory management
-└─ Order management
+├─ Basic CRUD operations (Products, Orders, Inventory)
+├─ Authentication + Authorization (Keycloak)
+├─ Real-time auctions (Valkey 8.0)
+├─ Accounting ledger (Spring Boot)
+└─ Initial Prometheus + Grafana monitoring
+
+**Phase 1.5: B2B Integration (Month 5-6)**
+├─ JSON-EDI protocol implementation
+├─ B2B partner webhooks
+├─ PO → Invoice → Ledger automation
+└─ Pilot with 2-3 B2B partners
 
 Phase 2: Scale (Months 6-12)
 ├─ Mobile app (React Native + Expo)
+├─ FastAPI (Python) for AI/ML integration
+├─ PaddleOCR-VL invoice processing
+├─ LSTM demand forecasting
 ├─ Advanced analytics (ClickHouse)
-├─ Reverse auctions
-└─ Kafka event streaming
+├─ Reverse auction refinement
+├─ Next.js 15 upgrade (Turbopack)
+└─ Kafka event streaming (Month 12)
 
 Phase 3: Optimize (Months 12-18)
-├─ Demand forecasting (ML)
-├─ Fraud detection
-├─ GPS tracking
-└─ Database replication/sharding
+├─ Google OR-Tools vehicle routing
+├─ Advanced demand forecasting
+├─ GPS tracking (Traccar)
+├─ Database read replicas + sharding
+├─ MongoDB for IoT (if telemetry > 1B events/month)
+├─ Flutter mobile (conditional)
+└─ Advanced fraud detection
 
-Phase 4: Enterprise (Months 18+)
-├─ Blockchain (Hyperledger Fabric)
+Phase 4: Enterprise (Months 18-24+)
+├─ Blockchain audit trails (ONLY if regulatory mandate - currently NOT planned)
 ├─ IoT integration (ThingsBoard)
 ├─ Workflow automation (n8n)
-└─ Advanced ML models
+├─ Advanced ML models (computer vision)
+└─ Supply chain transparency features
 ```
 
 ---
