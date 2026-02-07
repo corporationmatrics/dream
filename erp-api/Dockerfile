@@ -4,15 +4,15 @@ FROM node:20-alpine AS builder
 WORKDIR /build
 
 # Copy package files
-COPY erp-api/package*.json ./
+COPY package*.json ./
 
 # Install dependencies
 RUN npm ci --only=production && \
     npm cache clean --force
 
 # Copy source code
-COPY erp-api/src ./src
-COPY erp-api/tsconfig.json ./
+COPY src ./src
+COPY tsconfig.json ./
 
 # Build application
 RUN npm run build
@@ -31,8 +31,8 @@ COPY --from=builder /build/dist ./dist
 COPY --from=builder /build/node_modules ./node_modules
 COPY --from=builder /build/package.json ./
 
-# Copy environment file
-COPY erp-api/.env* ./
+# Copy environment file (optional)
+COPY .env* ./ 2>/dev/null || true
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

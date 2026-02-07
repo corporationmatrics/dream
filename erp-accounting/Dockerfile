@@ -4,12 +4,12 @@ FROM maven:3.9-eclipse-temurin-21 AS builder
 WORKDIR /build
 
 # Copy pom and download dependencies (layer caching)
-COPY erp-accounting/pom.xml ./
+COPY pom.xml ./
 
 RUN mvn dependency:go-offline -DskipTests
 
 # Copy source code
-COPY erp-accounting/src ./src
+COPY src ./src
 
 # Build application
 RUN mvn clean package -DskipTests
