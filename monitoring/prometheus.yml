@@ -1,0 +1,87 @@
+# Prometheus Configuration for ERP Platform Monitoring
+# Scrapes metrics from all containerized services
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'erp-platform'
+    environment: 'development'
+
+# Alert manager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configurations for individual services
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # FastAPI Service (OCR & ML)
+  - job_name: 'fastapi'
+    static_configs:
+      - targets: ['fastapi:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    
+  # Spring Boot Financial Core (Actuator metrics)
+  - job_name: 'spring-boot'
+    static_configs:
+      - targets: ['spring-boot:8085']
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 15s
+
+  # RabbitMQ Metrics
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15672']
+    metrics_path: '/api/metrics'
+    params:
+      family: ['rabbitmq_global']
+    scrape_interval: 30s
+
+  # Valkey/Redis Metrics
+  - job_name: 'valkey'
+    static_configs:
+      - targets: ['valkey:6379']
+    scrape_interval: 10s
+
+  # PostgreSQL Exporter (if exporter available)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+    scrape_interval: 30s
+
+  # MongoDB Endpoint (if exporter available)
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongodb:27017']
+    scrape_interval: 30s
+
+  # APISIX Gateway (Phase 1B)
+  - job_name: 'apisix'
+    static_configs:
+      - targets: ['apisix:9180']
+    metrics_path: '/apisix/prometheus/metrics'
+    scrape_interval: 15s
+
+  # EDI Protocol Service (Phase 1B)
+  - job_name: 'edi-protocol'
+    static_configs:
+      - targets: ['edi-protocol:8050']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # Meilisearch (Phase 1B)
+  - job_name: 'meilisearch'
+    static_configs:
+      - targets: ['meilisearch:7700']
+    metrics_path: '/metrics'
+    scrape_interval: 30s

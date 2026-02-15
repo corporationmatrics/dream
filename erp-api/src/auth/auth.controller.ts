@@ -11,7 +11,10 @@ export class AuthController {
   async register(
     @Body() body: { email: string; password: string; name: string },
   ) {
-    return this.authService.register(body.email, body.password, body.name);
+    const nameParts = body.name.trim().split(/\s+/);
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || '';
+    return this.authService.registerFromController(body.email, body.password, firstName, lastName);
   }
 
   @Post('login')
@@ -32,7 +35,13 @@ export class AuthController {
     @Request() req: any,
     @Body() body: { name?: string; email?: string },
   ) {
-    return this.authService.updateProfile(req.user.id, body);
+    const updateData: any = { email: body.email };
+    if (body.name) {
+      const nameParts = body.name.trim().split(/\s+/);
+      updateData.firstName = nameParts[0];
+      updateData.lastName = nameParts.slice(1).join(' ') || undefined;
+    }
+    return this.authService.updateProfile(req.user.id, updateData);
   }
 
   @Post('change-password')

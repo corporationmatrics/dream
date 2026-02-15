@@ -1,0 +1,1493 @@
+# 🏦 DATABASE SCHEMA & ACCOUNTING SERVICES - IMPLEMENTATION GUIDE
+
+## Phase Overview
+
+**Primary Objective:** Build the double-entry bookkeeping engine with real-time inventory sync and B2B EDI integration.
+
+**Timeline:** Weeks 1-4 (Database: Week 1-2, Services: Week 2-4)
+
+**Key Technologies:**
+- Spring Boot 3.x (Java 21) - Transaction management & ACID compliance
+- PostgreSQL 16 - Relational integrity
+- TypeORM - ORM layer
+- Valkey 8.0 - Real-time caching
+- JSON/JSONB - EDI protocol storage
+
+---
+
+## 🗂️ COMPLETE DATABASE SCHEMA
+
+### **1. CORE RELATIONAL TABLES**
+
+#### **A. TENANT (Multi-tenancy)**
+
+```sql
+CREATE TABLE tenants (
+    tenant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Business Information
+    business_name VARCHAR(255) NOT NULL,
+    business_type VARCHAR(50) NOT NULL, -- RETAILER, WHOLESALER, MANUFACTURER
+    business_category VARCHAR(100), -- FMCG, ELECTRONICS, TEXTILES, etc.
+    
+    -- GST & Tax Information
+    gstin VARCHAR(15) UNIQUE NOT NULL, -- Goods & Services Tax ID
+    pan VARCHAR(10), -- Permanent Account Number
+    cin VARCHAR(21), -- Corporate Identification Number (if company)
+    
+    -- Business Details
+    address JSONB NOT NULL, -- {"street", "city", "state", "zip", "country"}
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    website VARCHAR(255),
+    
+    -- Account Settings
+    fiscal_year_start DATE, -- 1st April (India)
+    currency VARCHAR(3) DEFAULT 'INR',
+    country_code VARCHAR(2) DEFAULT 'IN',
+    timezone VARCHAR(100) DEFAULT 'Asia/Kolkata',
+    
+    -- Inventory Settings
+    inventory_valuation_method VARCHAR(20) DEFAULT 'FIFO', -- FIFO, WEIGHTED_AVG
+    reorder_threshold DECIMAL(10, 2),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    CONSTRAINT valid_business_type CHECK (business_type IN ('RETAILER', 'WHOLESALER', 'MANUFACTURER', 'DISTRIBUTOR')),
+    CONSTRAINT valid_valuation CHECK (inventory_valuation_method IN ('FIFO', 'WEIGHTED_AVG'))
+);
+
+CREATE INDEX idx_tenants_gstin ON tenants(gstin);
+CREATE INDEX idx_tenants_active ON tenants(is_active);
+```
+
+#### **B. USERS**
+
+```sql
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Basic Info
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100),
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    
+    -- Authentication
+    password_hash VARCHAR(255),
+    keycloak_id VARCHAR(255), -- OAuth2 integration
+    
+    -- Role & Permissions
+    role VARCHAR(50) NOT NULL, -- OWNER, ACCOUNTANT, MANAGER, VIEWER
+    permissions JSONB DEFAULT '[]', -- Fine-grained permissions
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    last_login TIMESTAMP,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_role CHECK (role IN ('OWNER', 'ACCOUNTANT', 'MANAGER', 'VIEWER')),
+    UNIQUE(tenant_id, email)
+);
+
+CREATE INDEX idx_users_tenant ON users(tenant_id);
+CREATE INDEX idx_users_keycloak ON users(keycloak_id);
+```
+
+#### **C. CHART OF ACCOUNTS (Master GL Structure)**
+
+```sql
+CREATE TABLE chart_of_accounts (
+    account_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Account Identity
+    account_code VARCHAR(20) NOT NULL, -- e.g., "1000-CASH", "2000-AP", "3000-SALES"
+    account_name VARCHAR(255) NOT NULL,
+    account_description TEXT,
+    
+    -- Account Classification
+    account_type VARCHAR(50) NOT NULL, -- ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE
+    account_subtype VARCHAR(100), -- CURRENT_ASSET, FIXED_ASSET, CURRENT_LIABILITY, etc.
+    
+    -- GST Applicability
+    gst_applicable BOOLEAN DEFAULT FALSE,
+    default_gst_rate DECIMAL(5, 2), -- e.g., 5, 12, 18, 28
+    
+    -- Hierarchy (Parent-Child relationships)
+    parent_account_id UUID REFERENCES chart_of_accounts(account_id) ON DELETE SET NULL,
+    hierarchy_level INT DEFAULT 0,
+    
+    -- Balancing Rules
+    normal_balance VARCHAR(10) NOT NULL, -- DEBIT or CREDIT
+    allow_manual_entries BOOLEAN DEFAULT TRUE,
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    archived_at TIMESTAMP,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID REFERENCES users(user_id),
+    
+    CONSTRAINT valid_account_type CHECK (account_type IN ('ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE')),
+    CONSTRAINT valid_balance CHECK (normal_balance IN ('DEBIT', 'CREDIT')),
+    UNIQUE(tenant_id, account_code)
+);
+
+CREATE INDEX idx_chart_tenant ON chart_of_accounts(tenant_id);
+CREATE INDEX idx_chart_parent ON chart_of_accounts(parent_account_id);
+CREATE INDEX idx_chart_type ON chart_of_accounts(account_type);
+```
+
+#### **D. GENERAL LEDGER (GL - Daily postings)**
+
+```sql
+CREATE TABLE general_ledger (
+    gl_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Reference to account
+    account_id UUID NOT NULL REFERENCES chart_of_accounts(account_id),
+    
+    -- Transaction Details
+    transaction_date DATE NOT NULL,
+    posting_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    
+    -- Entry Type
+    entry_type VARCHAR(50) NOT NULL, -- DEBIT, CREDIT
+    amount DECIMAL(15, 2) NOT NULL,
+    
+    -- Narrative
+    description VARCHAR(500),
+    reference_id VARCHAR(100), -- Links to Invoice#, PO#, etc.
+    reference_type VARCHAR(50), -- INVOICE, PO, PAYMENT, EXPENSE, etc.
+    
+    -- Audit & Status
+    journal_id UUID, -- References journal_entries
+    is_posted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    posted_at TIMESTAMP,
+    
+    CONSTRAINT valid_entry_type CHECK (entry_type IN ('DEBIT', 'CREDIT')),
+    CONSTRAINT positive_amount CHECK (amount > 0)
+);
+
+CREATE INDEX idx_gl_tenant ON general_ledger(tenant_id);
+CREATE INDEX idx_gl_account ON general_ledger(account_id);
+CREATE INDEX idx_gl_date ON general_ledger(transaction_date);
+CREATE INDEX idx_gl_reference ON general_ledger(reference_id);
+```
+
+#### **E. JOURNAL ENTRIES (Transaction Headers)**
+
+```sql
+CREATE TABLE journal_entries (
+    journal_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Entry Identification
+    entry_number VARCHAR(50) NOT NULL, -- Auto-generated: JE-2026-0001
+    entry_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    
+    -- Business Context
+    reference_type VARCHAR(50), -- SALE, PURCHASE, PAYMENT, ADJUSTMENT, etc.
+    reference_id VARCHAR(100), -- Invoice#, PO#, etc.
+    description TEXT NOT NULL,
+    
+    -- Entry Status
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT', -- DRAFT, POSTED, REVERSED
+    
+    -- Amounts (for quick reference)
+    total_debit DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    total_credit DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    
+    -- Posting Control
+    is_balanced BOOLEAN DEFAULT FALSE, -- Debit = Credit?
+    posted_at TIMESTAMP,
+    posted_by UUID REFERENCES users(user_id),
+    
+    -- Reversals
+    reversed_at TIMESTAMP,
+    reversed_by UUID REFERENCES users(user_id),
+    reversal_reason TEXT,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID NOT NULL REFERENCES users(user_id),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_status CHECK (status IN ('DRAFT', 'POSTED', 'REVERSED')),
+    UNIQUE(tenant_id, entry_number)
+);
+
+CREATE INDEX idx_journal_tenant ON journal_entries(tenant_id);
+CREATE INDEX idx_journal_status ON journal_entries(status);
+CREATE INDEX idx_journal_date ON journal_entries(entry_date);
+```
+
+#### **F. POSTINGS (Double-Entry Legs)**
+
+```sql
+CREATE TABLE postings (
+    posting_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    journal_id UUID NOT NULL REFERENCES journal_entries(journal_id) ON DELETE CASCADE,
+    
+    -- Account & Amount
+    account_id UUID NOT NULL REFERENCES chart_of_accounts(account_id),
+    posting_type VARCHAR(10) NOT NULL, -- DEBIT or CREDIT
+    amount DECIMAL(15, 2) NOT NULL,
+    
+    -- Line Details
+    line_number INT NOT NULL,
+    line_description VARCHAR(500),
+    
+    -- GST on this line (if applicable)
+    gst_applicable BOOLEAN DEFAULT FALSE,
+    gst_rate DECIMAL(5, 2),
+    gst_amount DECIMAL(15, 2),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_posting_type CHECK (posting_type IN ('DEBIT', 'CREDIT')),
+    CONSTRAINT positive_posting_amount CHECK (amount > 0)
+);
+
+CREATE INDEX idx_postings_journal ON postings(journal_id);
+CREATE INDEX idx_postings_account ON postings(account_id);
+CREATE INDEX idx_postings_type ON postings(posting_type);
+```
+
+#### **G. CUSTOMERS (B2B & B2C)**
+
+```sql
+CREATE TABLE customers (
+    customer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    
+    -- Basic Info
+    customer_name VARCHAR(255) NOT NULL,
+    customer_type VARCHAR(50) NOT NULL, -- RETAILER, DISTRIBUTOR, END_CONSUMER, B2B, B2C
+    
+    -- Contact
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    
+    -- GST & Tax
+    gstin VARCHAR(15), -- For B2B customers
+    
+    -- Address
+    billing_address JSONB,
+    shipping_address JSONB,
+    
+    -- Credit Management
+    credit_limit DECIMAL(15, 2) DEFAULT 0,
+    credit_used DECIMAL(15, 2) DEFAULT 0,
+    payment_terms VARCHAR(50), -- NET_30, NET_60, COD, etc.
+    
+    -- GST
+    gst_applicable BOOLEAN DEFAULT TRUE,
+    gst_status VARCHAR(20), -- REGISTERED, UNREGISTERED, COMPOSITION
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_customer_type CHECK (customer_type IN ('RETAILER', 'DISTRIBUTOR', 'END_CONSUMER', 'B2B', 'B2C'))
+);
+
+CREATE INDEX idx_customers_tenant ON customers(tenant_id);
+CREATE INDEX idx_customers_gstin ON customers(gstin);
+```
+
+#### **H. SUPPLIERS**
+
+```sql
+CREATE TABLE suppliers (
+    supplier_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    
+    -- Basic Info
+    supplier_name VARCHAR(255) NOT NULL,
+    supplier_type VARCHAR(50), -- MANUFACTURER, DISTRIBUTOR, AGENT, etc.
+    
+    -- Contact
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    
+    -- Tax
+    gstin VARCHAR(15) NOT NULL UNIQUE,
+    pan VARCHAR(10),
+    
+    -- Address
+    address JSONB,
+    
+    -- Payment Terms
+    payment_terms VARCHAR(50), -- NET_30, NET_60, etc.
+    bank_details JSONB, -- {"bank_name", "account_number", "ifsc", "account_holder"}
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_suppliers_tenant ON suppliers(tenant_id);
+CREATE INDEX idx_suppliers_gstin ON suppliers(gstin);
+```
+
+#### **I. PRODUCTS**
+
+```sql
+CREATE TABLE products (
+    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    
+    -- Product Identity
+    product_code VARCHAR(100) NOT NULL, -- SKU
+    product_name VARCHAR(255) NOT NULL,
+    product_description TEXT,
+    category VARCHAR(100),
+    
+    -- Inventory Classification
+    hsn_code VARCHAR(10) NOT NULL, -- For GST calculation
+    
+    -- Pricing & GST
+    cost_price DECIMAL(15, 2) NOT NULL,
+    selling_price DECIMAL(15, 2) NOT NULL,
+    gst_rate DECIMAL(5, 2) NOT NULL, -- 0, 5, 12, 18, 28
+    
+    -- Unit of Measurement
+    unit_of_measure VARCHAR(20) DEFAULT 'PIECE', -- PIECE, KG, LITER, etc.
+    
+    -- Inventory Control
+    reorder_level INT DEFAULT 10,
+    reorder_quantity INT DEFAULT 50,
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(tenant_id, product_code)
+);
+
+CREATE INDEX idx_products_tenant ON products(tenant_id);
+CREATE INDEX idx_products_hsn ON products(hsn_code);
+```
+
+#### **J. INVENTORY_LEDGER (Real-time stock movements)**
+
+```sql
+CREATE TABLE inventory_ledger (
+    ledger_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    
+    -- Transaction Details
+    transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    transaction_type VARCHAR(50) NOT NULL, -- PURCHASE, SALE, ADJUSTMENT, DAMAGE, RETURN
+    
+    -- Quantity & Cost
+    quantity_in INT DEFAULT 0,
+    quantity_out INT DEFAULT 0,
+    unit_cost DECIMAL(15, 2),
+    
+    -- Batch & Expiry (for FMCG)
+    batch_number VARCHAR(100),
+    expiry_date DATE,
+    manufacture_date DATE,
+    
+    -- Reference
+    reference_id VARCHAR(100), -- Invoice#, PO#, etc.
+    reference_type VARCHAR(50),
+    
+    -- Valuation Method
+    valuation_method VARCHAR(20), -- FIFO, WEIGHTED_AVG
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID REFERENCES users(user_id),
+    
+    CONSTRAINT valid_transaction_type CHECK (transaction_type IN ('PURCHASE', 'SALE', 'ADJUSTMENT', 'DAMAGE', 'RETURN'))
+);
+
+CREATE INDEX idx_inventory_tenant ON inventory_ledger(tenant_id);
+CREATE INDEX idx_inventory_product ON inventory_ledger(product_id);
+CREATE INDEX idx_inventory_date ON inventory_ledger(transaction_date);
+CREATE INDEX idx_inventory_reference ON inventory_ledger(reference_id);
+```
+
+#### **K. INVENTORY_BALANCE (Real-time stock balance - cached)**
+
+```sql
+CREATE TABLE inventory_balance (
+    balance_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    
+    -- Current Balance
+    quantity_on_hand INT NOT NULL DEFAULT 0,
+    inventory_value DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    
+    -- Audit
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(tenant_id, product_id)
+);
+
+CREATE INDEX idx_balance_tenant ON inventory_balance(tenant_id);
+```
+
+#### **L. INVOICES (Sales transactions)**
+
+```sql
+CREATE TABLE invoices (
+    invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(customer_id),
+    
+    -- Invoice Identification
+    invoice_number VARCHAR(50) NOT NULL, -- AUTO-GENERATED: INV-2026-0001
+    invoice_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    due_date DATE,
+    
+    -- Amount Details
+    subtotal DECIMAL(15, 2) NOT NULL,
+    cgst_amount DECIMAL(15, 2) DEFAULT 0, -- Central GST (if intra-state)
+    sgst_amount DECIMAL(15, 2) DEFAULT 0, -- State GST (if intra-state)
+    igst_amount DECIMAL(15, 2) DEFAULT 0, -- Integrated GST (if inter-state)
+    total_tax DECIMAL(15, 2) DEFAULT 0,
+    total_amount DECIMAL(15, 2) NOT NULL,
+    
+    -- Payment Status
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT', -- DRAFT, SENT, PARTIAL, PAID, OVERDUE
+    amount_paid DECIMAL(15, 2) DEFAULT 0,
+    outstanding DECIMAL(15, 2),
+    
+    -- Business Context
+    payment_terms VARCHAR(50),
+    notes TEXT,
+    
+    -- Posting to GL
+    is_posted BOOLEAN DEFAULT FALSE,
+    posted_at TIMESTAMP,
+    journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_status CHECK (status IN ('DRAFT', 'SENT', 'PARTIAL', 'PAID', 'OVERDUE')),
+    UNIQUE(tenant_id, invoice_number)
+);
+
+CREATE INDEX idx_invoices_tenant ON invoices(tenant_id);
+CREATE INDEX idx_invoices_customer ON invoices(customer_id);
+CREATE INDEX idx_invoices_status ON invoices(status);
+```
+
+#### **M. INVOICE_LINES (Line items on invoice)**
+
+```sql
+CREATE TABLE invoice_lines (
+    line_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_id UUID NOT NULL REFERENCES invoices(invoice_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    
+    -- Line Item Details
+    line_number INT NOT NULL,
+    quantity INT NOT NULL,
+    unit_price DECIMAL(15, 2) NOT NULL,
+    line_total DECIMAL(15, 2) NOT NULL,
+    
+    -- GST
+    gst_rate DECIMAL(5, 2),
+    gst_amount DECIMAL(15, 2),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_invoice_lines_invoice ON invoice_lines(invoice_id);
+```
+
+#### **N. PURCHASE_ORDERS (Buying transactions)**
+
+```sql
+CREATE TABLE purchase_orders (
+    po_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    supplier_id UUID NOT NULL REFERENCES suppliers(supplier_id),
+    
+    -- PO Identification
+    po_number VARCHAR(50) NOT NULL,
+    po_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    expected_delivery_date DATE,
+    
+    -- Amount Details
+    subtotal DECIMAL(15, 2) NOT NULL,
+    cgst_amount DECIMAL(15, 2) DEFAULT 0,
+    sgst_amount DECIMAL(15, 2) DEFAULT 0,
+    igst_amount DECIMAL(15, 2) DEFAULT 0,
+    total_tax DECIMAL(15, 2) DEFAULT 0,
+    total_amount DECIMAL(15, 2) NOT NULL,
+    
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT', -- DRAFT, CONFIRMED, RECEIVED, INVOICED, PAID
+    goods_received_qty INT DEFAULT 0,
+    
+    -- GL Posting
+    is_posted BOOLEAN DEFAULT FALSE,
+    journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_po_status CHECK (status IN ('DRAFT', 'CONFIRMED', 'RECEIVED', 'INVOICED', 'PAID')),
+    UNIQUE(tenant_id, po_number)
+);
+
+CREATE INDEX idx_po_tenant ON purchase_orders(tenant_id);
+CREATE INDEX idx_po_supplier ON purchase_orders(supplier_id);
+```
+
+#### **O. PO_LINES (Line items on PO)**
+
+```sql
+CREATE TABLE po_lines (
+    line_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    po_id UUID NOT NULL REFERENCES purchase_orders(po_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    
+    -- Line Details
+    line_number INT NOT NULL,
+    quantity_ordered INT NOT NULL,
+    quantity_received INT DEFAULT 0,
+    unit_price DECIMAL(15, 2) NOT NULL,
+    line_total DECIMAL(15, 2) NOT NULL,
+    
+    -- GST
+    gst_rate DECIMAL(5, 2),
+    gst_amount DECIMAL(15, 2),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_po_lines_po ON po_lines(po_id);
+```
+
+#### **P. PAYMENTS_RECEIVED**
+
+```sql
+CREATE TABLE payments_received (
+    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(customer_id),
+    
+    -- Payment Details
+    payment_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    amount DECIMAL(15, 2) NOT NULL,
+    payment_mode VARCHAR(50) NOT NULL, -- CASH, CHEQUE, BANK_TRANSFER, UPI, CARD
+    reference_number VARCHAR(100),
+    
+    -- Reconciliation
+    is_reconciled BOOLEAN DEFAULT FALSE,
+    reconciled_against JSONB, -- Array of invoice_ids
+    
+    -- GL Posting
+    journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_mode CHECK (payment_mode IN ('CASH', 'CHEQUE', 'BANK_TRANSFER', 'UPI', 'CARD'))
+);
+
+CREATE INDEX idx_payment_rec_tenant ON payments_received(tenant_id);
+CREATE INDEX idx_payment_rec_customer ON payments_received(customer_id);
+```
+
+#### **Q. PAYMENTS_MADE**
+
+```sql
+CREATE TABLE payments_made (
+    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    supplier_id UUID NOT NULL REFERENCES suppliers(supplier_id),
+    
+    -- Payment Details
+    payment_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    amount DECIMAL(15, 2) NOT NULL,
+    payment_mode VARCHAR(50) NOT NULL,
+    reference_number VARCHAR(100),
+    
+    -- Reconciliation
+    is_reconciled BOOLEAN DEFAULT FALSE,
+    reconciled_against JSONB, -- Array of po_ids
+    
+    -- GL Posting
+    journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_payment_made_tenant ON payments_made(tenant_id);
+CREATE INDEX idx_payment_made_supplier ON payments_made(supplier_id);
+```
+
+#### **R. LEDGER_ACCOUNTS (Customer/Supplier subsidiary ledgers)**
+
+```sql
+CREATE TABLE ledger_accounts (
+    ledger_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Reference
+    customer_id UUID REFERENCES customers(customer_id) ON DELETE CASCADE,
+    supplier_id UUID REFERENCES suppliers(supplier_id) ON DELETE CASCADE,
+    
+    -- Ledger Details
+    transaction_date DATE NOT NULL,
+    transaction_type VARCHAR(50), -- INVOICE, PAYMENT, ADJUSTMENT
+    reference_id VARCHAR(100),
+    
+    -- Amount
+    debit DECIMAL(15, 2) DEFAULT 0,
+    credit DECIMAL(15, 2) DEFAULT 0,
+    running_balance DECIMAL(15, 2),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK ((customer_id IS NULL OR supplier_id IS NULL) AND (customer_id IS NOT NULL OR supplier_id IS NOT NULL))
+);
+
+CREATE INDEX idx_ledger_customer ON ledger_accounts(customer_id);
+CREATE INDEX idx_ledger_supplier ON ledger_accounts(supplier_id);
+CREATE INDEX idx_ledger_date ON ledger_accounts(transaction_date);
+```
+
+#### **S. B2B_SYNC_MAP (Seller-Buyer linkage)**
+
+```sql
+CREATE TABLE b2b_sync_map (
+    sync_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Seller Details
+    seller_tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    seller_invoice_id VARCHAR(100) NOT NULL,
+    seller_invoice_date DATE NOT NULL,
+    
+    -- Buyer Details
+    buyer_tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    buyer_po_id VARCHAR(100),
+    buyer_po_date DATE,
+    
+    -- Sync Metadata
+    sync_status VARCHAR(50) NOT NULL DEFAULT 'PENDING', -- PENDING, ACKNOWLEDGED, REJECTED, COMPLETED
+    edi_payload JSONB NOT NULL, -- EDI message content
+    
+    -- Amount Reconciliation
+    seller_amount DECIMAL(15, 2) NOT NULL,
+    buyer_amount DECIMAL(15, 2),
+    variance DECIMAL(15, 2),
+    variance_reason TEXT,
+    
+    -- Automatic Entry Creation
+    seller_journal_created BOOLEAN DEFAULT FALSE,
+    buyer_journal_created BOOLEAN DEFAULT FALSE,
+    seller_journal_id UUID REFERENCES journal_entries(journal_id),
+    buyer_journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    acknowledged_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX idx_b2b_seller ON b2b_sync_map(seller_tenant_id);
+CREATE INDEX idx_b2b_buyer ON b2b_sync_map(buyer_tenant_id);
+CREATE INDEX idx_b2b_status ON b2b_sync_map(sync_status);
+```
+
+#### **T. GST_TRANSACTIONS (Tax compliance tracking)**
+
+```sql
+CREATE TABLE gst_transactions (
+    gst_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Transaction Reference
+    transaction_date DATE NOT NULL,
+    transaction_type VARCHAR(50) NOT NULL, -- INWARD (purchase), OUTWARD (sale)
+    reference_id VARCHAR(100),
+    
+    -- Tax Details
+    hsn_code VARCHAR(10),
+    taxable_value DECIMAL(15, 2) NOT NULL,
+    cgst_rate DECIMAL(5, 2),
+    cgst_amount DECIMAL(15, 2),
+    sgst_rate DECIMAL(5, 2),
+    sgst_amount DECIMAL(15, 2),
+    igst_rate DECIMAL(5, 2),
+    igst_amount DECIMAL(15, 2),
+    
+    -- Party Details
+    party_gstin VARCHAR(15),
+    party_name VARCHAR(255),
+    
+    -- Reconciliation
+    reported_in_gst_return BOOLEAN DEFAULT FALSE,
+    gst_return_month VARCHAR(7), -- YYYY-MM format
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT valid_gst_type CHECK (transaction_type IN ('INWARD', 'OUTWARD'))
+);
+
+CREATE INDEX idx_gst_tenant ON gst_transactions(tenant_id);
+CREATE INDEX idx_gst_date ON gst_transactions(transaction_date);
+```
+
+#### **U. BANK_ACCOUNTS**
+
+```sql
+CREATE TABLE bank_accounts (
+    bank_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Account Details
+    account_name VARCHAR(255) NOT NULL,
+    bank_name VARCHAR(255) NOT NULL,
+    branch_name VARCHAR(255),
+    account_number VARCHAR(20) NOT NULL,
+    ifsc_code VARCHAR(11) NOT NULL,
+    
+    -- Account Type
+    account_type VARCHAR(50), -- CURRENT, SAVINGS, LOAN
+    
+    -- GL Account Linkage
+    cash_gl_account_id UUID NOT NULL REFERENCES chart_of_accounts(account_id),
+    
+    -- Balancing
+    opening_balance DECIMAL(15, 2) DEFAULT 0,
+    current_balance DECIMAL(15, 2) DEFAULT 0,
+    last_reconciled_at TIMESTAMP,
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(tenant_id, account_number)
+);
+
+CREATE INDEX idx_bank_tenant ON bank_accounts(tenant_id);
+```
+
+#### **V. BANK_RECONCILIATION**
+
+```sql
+CREATE TABLE bank_reconciliation (
+    recon_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    bank_id UUID NOT NULL REFERENCES bank_accounts(bank_id),
+    
+    -- Reconciliation Details
+    reconciliation_date DATE NOT NULL,
+    bank_statement_balance DECIMAL(15, 2) NOT NULL,
+    system_balance DECIMAL(15, 2) NOT NULL,
+    difference DECIMAL(15, 2),
+    
+    -- Status
+    status VARCHAR(20) NOT NULL, -- PENDING, RECONCILED
+    reconciled_by UUID REFERENCES users(user_id),
+    
+    -- Matched & Unmatched Transactions
+    matched_transactions JSONB DEFAULT '[]',
+    unmatched_transactions JSONB DEFAULT '[]',
+    
+    -- Notes
+    notes TEXT,
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX idx_recon_bank ON bank_reconciliation(bank_id);
+```
+
+#### **W. EXPENSES**
+
+```sql
+CREATE TABLE expenses (
+    expense_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    
+    -- Expense Details
+    expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    amount DECIMAL(15, 2) NOT NULL,
+    category VARCHAR(100) NOT NULL, -- RENT, UTILITIES, SALARY, etc.
+    description TEXT,
+    
+    -- GL Account
+    account_id UUID NOT NULL REFERENCES chart_of_accounts(account_id),
+    
+    -- GST
+    gst_applicable BOOLEAN DEFAULT FALSE,
+    gst_rate DECIMAL(5, 2),
+    gst_amount DECIMAL(15, 2),
+    
+    -- Payment
+    payment_mode VARCHAR(50),
+    bank_id UUID REFERENCES bank_accounts(bank_id),
+    
+    -- GL Posting
+    journal_id UUID REFERENCES journal_entries(journal_id),
+    
+    -- Receipts/Bills
+    bill_attachment_url VARCHAR(500),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID NOT NULL REFERENCES users(user_id)
+);
+
+CREATE INDEX idx_expenses_tenant ON expenses(tenant_id);
+CREATE INDEX idx_expenses_category ON expenses(category);
+CREATE INDEX idx_expenses_date ON expenses(expense_date);
+```
+
+---
+
+## 🏛️ SPRING BOOT ACCOUNTING SERVICE ARCHITECTURE
+
+### **Project Structure**
+
+```
+erp-accounting/
+├── src/main/java/com/erp/
+│   ├── accounting/
+│   │   ├── controller/          # REST endpoints
+│   │   ├── service/             # Business logic
+│   │   ├── repository/          # Database access
+│   │   ├── entity/              # JPA entities (mapped from schema)
+│   │   ├── dto/                 # Data transfer objects
+│   │   ├── exception/           # Custom exceptions
+│   │   ├── validator/           # Business rule validators
+│   │   ├── event/               # Event publishing
+│   │   └── config/              # Spring configuration
+│   └── common/
+│       ├── util/
+│       ├── constant/
+│       └── security/
+```
+
+### **Core Services**
+
+#### **1. JournalEntryService (Double-Entry Engine)**
+
+```java
+@Service
+@Transactional
+public class JournalEntryService {
+    
+    @Autowired
+    private JournalEntryRepository journalRepo;
+    
+    @Autowired
+    private PostingRepository postingRepo;
+    
+    @Autowired
+    private GeneralLedgerRepository glRepo;
+    
+    @Autowired
+    private ChartOfAccountsRepository chartRepo;
+    
+    /**
+     * CORE RULE #1: Create a journal entry with double-entry validation
+     * Every entry must have: Σ(Debits) = Σ(Credits)
+     */
+    public JournalEntryDTO createJournalEntry(CreateJournalEntryRequest request) {
+        
+        // Step 1: Validate balance
+        BigDecimal totalDebits = request.getPostings()
+            .stream()
+            .filter(p -> p.getPostingType() == PostingType.DEBIT)
+            .map(PostingDetail::getAmount)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        BigDecimal totalCredits = request.getPostings()
+            .stream()
+            .filter(p -> p.getPostingType() == PostingType.CREDIT)
+            .map(PostingDetail::getAmount)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        if (totalDebits.compareTo(totalCredits) != 0) {
+            throw new AccountingException(
+                "Journal entry is not balanced. Debits: " + totalDebits + 
+                ", Credits: " + totalCredits
+            );
+        }
+        
+        // Step 2: Create entry header
+        JournalEntry entry = new JournalEntry();
+        entry.setTenantId(request.getTenantId());
+        entry.setEntryNumber(generateEntryNumber(request.getTenantId()));
+        entry.setEntryDate(LocalDate.now());
+        entry.setReferenceType(request.getReferenceType());
+        entry.setReferenceId(request.getReferenceId());
+        entry.setDescription(request.getDescription());
+        entry.setStatus(JournalStatus.DRAFT);
+        entry.setTotalDebit(totalDebits);
+        entry.setTotalCredit(totalCredits);
+        entry.setIsBalanced(true);
+        entry.setCreatedBy(request.getCreatedBy());
+        
+        JournalEntry savedEntry = journalRepo.save(entry);
+        
+        // Step 3: Create posting lines
+        int lineNumber = 1;
+        for (PostingDetail postingDetail : request.getPostings()) {
+            Posting posting = new Posting();
+            posting.setJournalId(savedEntry.getJournalId());
+            posting.setAccountId(postingDetail.getAccountId());
+            posting.setPostingType(postingDetail.getPostingType());
+            posting.setAmount(postingDetail.getAmount());
+            posting.setLineNumber(lineNumber++);
+            posting.setLineDescription(postingDetail.getDescription());
+            
+            // GST calculation if applicable
+            if (postingDetail.isGstApplicable()) {
+                BigDecimal gstRate = postingDetail.getGstRate();
+                BigDecimal gstAmount = postingDetail.getAmount()
+                    .multiply(gstRate)
+                    .divide(new BigDecimal("100"));
+                posting.setGstAmount(gstAmount);
+                posting.setGstRate(gstRate);
+            }
+            
+            postingRepo.save(posting);
+        }
+        
+        return mapToDTO(savedEntry);
+    }
+    
+    /**
+     * Post a journal entry to the General Ledger
+     * This creates immutable GL records
+     */
+    @Transactional
+    public void postJournalEntry(UUID journalId) {
+        JournalEntry entry = journalRepo.findById(journalId)
+            .orElseThrow(() -> new EntityNotFoundException("Journal entry not found"));
+        
+        if (entry.getStatus() != JournalStatus.DRAFT) {
+            throw new AccountingException("Only DRAFT entries can be posted");
+        }
+        
+        // Get all postings
+        List<Posting> postings = postingRepo.findByJournalId(journalId);
+        
+        // Create GL records (immutable)
+        for (Posting posting : postings) {
+            GeneralLedger glRecord = new GeneralLedger();
+            glRecord.setTenantId(entry.getTenantId());
+            glRecord.setAccountId(posting.getAccountId());
+            glRecord.setTransactionDate(entry.getEntryDate());
+            glRecord.setPostingDate(LocalDate.now());
+            glRecord.setEntryType(posting.getPostingType());
+            glRecord.setAmount(posting.getAmount());
+            glRecord.setDescription(entry.getDescription());
+            glRecord.setReferenceId(entry.getReferenceId());
+            glRecord.setReferenceType(entry.getReferenceType());
+            glRecord.setJournalId(journalId);
+            glRecord.setIsPosted(false); // Will be updated after transaction
+            
+            glRepo.save(glRecord);
+        }
+        
+        // Update entry status
+        entry.setStatus(JournalStatus.POSTED);
+        entry.setPostedAt(Instant.now());
+        entry.setPostedBy(entry.getCreatedBy());
+        journalRepo.save(entry);
+    }
+    
+    /**
+     * CORE RULE #2: Immutability - Never delete, always reverse
+     */
+    @Transactional
+    public void reverseJournalEntry(UUID journalId, String reversalReason) {
+        JournalEntry originalEntry = journalRepo.findById(journalId)
+            .orElseThrow(() -> new EntityNotFoundException("Journal entry not found"));
+        
+        if (originalEntry.getStatus() == JournalStatus.REVERSED) {
+            throw new AccountingException("Entry already reversed");
+        }
+        
+        // Step 1: Create reversal entry with opposite postings
+        JournalEntry reversalEntry = new JournalEntry();
+        reversalEntry.setTenantId(originalEntry.getTenantId());
+        reversalEntry.setEntryNumber(generateEntryNumber(originalEntry.getTenantId()));
+        reversalEntry.setEntryDate(LocalDate.now());
+        reversalEntry.setDescription("REVERSAL: " + originalEntry.getDescription());
+        reversalEntry.setStatus(JournalStatus.POSTED);
+        reversalEntry.setTotalDebit(originalEntry.getTotalCredit());
+        reversalEntry.setTotalCredit(originalEntry.getTotalDebit());
+        reversalEntry.setIsBalanced(true);
+        
+        JournalEntry savedReversal = journalRepo.save(reversalEntry);
+        
+        // Step 2: Create opposite postings
+        List<Posting> originalPostings = postingRepo.findByJournalId(journalId);
+        for (Posting posting : originalPostings) {
+            Posting reversalPosting = new Posting();
+            reversalPosting.setJournalId(savedReversal.getJournalId());
+            reversalPosting.setAccountId(posting.getAccountId());
+            reversalPosting.setPostingType(
+                posting.getPostingType() == PostingType.DEBIT ? 
+                PostingType.CREDIT : PostingType.DEBIT
+            );
+            reversalPosting.setAmount(posting.getAmount());
+            reversalPosting.setLineDescription("Reversal of: " + posting.getLineDescription());
+            
+            postingRepo.save(reversalPosting);
+        }
+        
+        // Step 3: Mark original as reversed
+        originalEntry.setStatus(JournalStatus.REVERSED);
+        originalEntry.setReversedAt(Instant.now());
+        originalEntry.setReversalReason(reversalReason);
+        journalRepo.save(originalEntry);
+        
+        // Step 4: Post the reversal entry to GL
+        postJournalEntry(savedReversal.getJournalId());
+    }
+    
+    /**
+     * Generate unique entry number: JE-2026-0001
+     */
+    private String generateEntryNumber(UUID tenantId) {
+        long count = journalRepo.countByTenantId(tenantId);
+        return String.format("JE-%d-%05d", Year.now().getValue(), count + 1);
+    }
+}
+```
+
+#### **2. GeneralLedgerService (Query & Reporting)**
+
+```java
+@Service
+@Transactional(readOnly = true)
+public class GeneralLedgerService {
+    
+    @Autowired
+    private GeneralLedgerRepository glRepo;
+    
+    @Autowired
+    private ChartOfAccountsRepository chartRepo;
+    
+    /**
+     * Get trial balance (sum of debits and credits by account)
+     * Must always balance: Σ(Debits) = Σ(Credits)
+     */
+    public TrialBalanceDTO getTrialBalance(UUID tenantId, LocalDate asOfDate) {
+        List<GeneralLedger> glRecords = glRepo.findByTenantIdAndTransactionDateBefore(
+            tenantId, asOfDate
+        );
+        
+        Map<UUID, TrialBalanceAccount> accounts = new HashMap<>();
+        
+        for (GeneralLedger record : glRecords) {
+            UUID accountId = record.getAccountId();
+            TrialBalanceAccount account = accounts.computeIfAbsent(
+                accountId,
+                k -> new TrialBalanceAccount(k)
+            );
+            
+            if (record.getEntryType() == PostingType.DEBIT) {
+                account.addDebit(record.getAmount());
+            } else {
+                account.addCredit(record.getAmount());
+            }
+        }
+        
+        BigDecimal totalDebits = accounts.values().stream()
+            .map(TrialBalanceAccount::getTotalDebits)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        BigDecimal totalCredits = accounts.values().stream()
+            .map(TrialBalanceAccount::getTotalCredits)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        // Verify balance
+        if (totalDebits.compareTo(totalCredits) != 0) {
+            throw new DataIntegrityException(
+                "Trial Balance does not match! Debits: " + totalDebits + 
+                ", Credits: " + totalCredits
+            );
+        }
+        
+        TrialBalanceDTO dto = new TrialBalanceDTO();
+        dto.setAsOfDate(asOfDate);
+        dto.setTotalDebits(totalDebits);
+        dto.setTotalCredits(totalCredits);
+        dto.setIsBalanced(true);
+        dto.setAccounts(accounts.values().stream()
+            .map(this::mapToDTO)
+            .collect(Collectors.toList()));
+        
+        return dto;
+    }
+    
+    /**
+     * Get account balance as of a specific date
+     */
+    public AccountBalanceDTO getAccountBalance(UUID tenantId, UUID accountId, LocalDate asOfDate) {
+        List<GeneralLedger> records = glRepo.findByTenantIdAndAccountIdAndTransactionDateBefore(
+            tenantId, accountId, asOfDate
+        );
+        
+        BigDecimal balance = records.stream()
+            .map(record -> record.getEntryType() == PostingType.DEBIT ?
+                record.getAmount() : record.getAmount().negate())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        AccountBalanceDTO dto = new AccountBalanceDTO();
+        dto.setAccountId(accountId);
+        dto.setAsOfDate(asOfDate);
+        dto.setBalance(balance);
+        dto.setRecordCount(records.size());
+        
+        return dto;
+    }
+}
+```
+
+#### **3. InventoryService (Real-time stock + COGS)**
+
+```java
+@Service
+@Transactional
+public class InventoryService {
+    
+    @Autowired
+    private InventoryLedgerRepository ledgerRepo;
+    
+    @Autowired
+    private InventoryBalanceRepository balanceRepo;
+    
+    @Autowired
+    private ProductRepository productRepo;
+    
+    @Autowired
+    private RedisTemplate<String, String> redisTemplate;
+    
+    /**
+     * Record stock movement with automatic COGS calculation
+     */
+    public void recordStockMovement(StockMovementRequest request) {
+        
+        // Validate product
+        Product product = productRepo.findById(request.getProductId())
+            .orElseThrow(() -> new EntityNotFoundException("Product not found"));
+        
+        // Create ledger entry
+        InventoryLedger ledgerEntry = new InventoryLedger();
+        ledgerEntry.setTenantId(request.getTenantId());
+        ledgerEntry.setProductId(request.getProductId());
+        ledgerEntry.setTransactionType(request.getTransactionType());
+        
+        if (request.getTransactionType() == TransactionType.PURCHASE) {
+            ledgerEntry.setQuantityIn(request.getQuantity());
+            ledgerEntry.setUnitCost(request.getUnitCost());
+        } else if (request.getTransactionType() == TransactionType.SALE) {
+            ledgerEntry.setQuantityOut(request.getQuantity());
+            
+            // Calculate COGS based on valuation method
+            BigDecimal cogs = calculateCOGS(
+                request.getTenantId(),
+                request.getProductId(),
+                request.getQuantity(),
+                product.getValuationMethod()
+            );
+            
+            ledgerEntry.setUnitCost(cogs.divide(new BigDecimal(request.getQuantity()), 2, RoundingMode.HALF_UP));
+        }
+        
+        ledgerEntry.setBatchNumber(request.getBatchNumber());
+        ledgerEntry.setExpiryDate(request.getExpiryDate());
+        ledgerEntry.setReferenceId(request.getReferenceId());
+        ledgerEntry.setReferenceType(request.getReferenceType());
+        
+        ledgerRepo.save(ledgerEntry);
+        
+        // Update real-time balance
+        updateInventoryBalance(request.getTenantId(), request.getProductId());
+        
+        // Check reorder threshold
+        checkAndCreatePO(request.getTenantId(), request.getProductId());
+    }
+    
+    /**
+     * Calculate COGS using FIFO method
+     */
+    private BigDecimal calculateCOGSFIFO(UUID tenantId, UUID productId, Integer quantity) {
+        List<InventoryLedger> purchaseQueue = ledgerRepo
+            .findPurchasesByProductOrderedByDate(tenantId, productId);
+        
+        BigDecimal totalCost = BigDecimal.ZERO;
+        int quantityNeeded = quantity;
+        
+        for (InventoryLedger purchase : purchaseQueue) {
+            int remainingQuantity = purchase.getQuantityIn() - purchase.getQuantityOutAssigned();
+            
+            if (remainingQuantity <= 0) continue;
+            
+            int qtyToTake = Math.min(quantityNeeded, remainingQuantity);
+            totalCost = totalCost.add(
+                purchase.getUnitCost()
+                    .multiply(new BigDecimal(qtyToTake))
+            );
+            
+            quantityNeeded -= qtyToTake;
+            
+            if (quantityNeeded == 0) break;
+        }
+        
+        return totalCost;
+    }
+    
+    /**
+     * Update real-time inventory balance (cached in RedisTemplate & DB)
+     */
+    private void updateInventoryBalance(UUID tenantId, UUID productId) {
+        BigDecimal balance = ledgerRepo
+            .findByTenantIdAndProductId(tenantId, productId)
+            .stream()
+            .map(rec -> {
+                BigDecimal in = new BigDecimal(rec.getQuantityIn() != null ? rec.getQuantityIn() : 0);
+                BigDecimal out = new BigDecimal(rec.getQuantityOut() != null ? rec.getQuantityOut() : 0);
+                return in.subtract(out).multiply(new BigDecimal(rec.getUnitCost() != null ? rec.getUnitCost() : 0));
+            })
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        // Update database
+        InventoryBalance balanceRecord = balanceRepo
+            .findByTenantIdAndProductId(tenantId, productId)
+            .orElseGet(() -> new InventoryBalance(tenantId, productId));
+        
+        balanceRecord.setInventoryValue(balance);
+        balanceRepo.save(balanceRecord);
+        
+        // Cache in Redis for real-time access
+        String cacheKey = "inventory:balance:" + tenantId + ":" + productId;
+        redisTemplate.opsForValue().set(cacheKey, balance.toString());
+    }
+    
+    /**
+     * Check if stock is below threshold and create PO automatically
+     */
+    private void checkAndCreatePO(UUID tenantId, UUID productId) {
+        Product product = productRepo.findById(productId).get();
+        InventoryBalance balance = balanceRepo.findByTenantIdAndProductId(tenantId, productId).get();
+        
+        if (balance.getQuantityOnHand() < product.getReorderLevel()) {
+            // Publish event to create PO
+            // This will be handled by PurchaseOrderService
+        }
+    }
+}
+```
+
+#### **4. InvoiceAccountingService (Sales → GL)**
+
+```java
+@Service
+@Transactional
+public class InvoiceAccountingService {
+    
+    @Autowired
+    private JournalEntryService journalService;
+    
+    @Autowired
+    private InventoryService inventoryService;
+    
+    @Autowired
+    private GeneralLedgerService glService;
+    
+    /**
+     * Post an invoice to the General Ledger
+     * Creates two journal entries:
+     * 1. Revenue entry (DR Receivable, CR Sales)
+     * 2. COGS entry (DR COGS, CR Inventory)
+     */
+    @Transactional
+    public void postInvoiceToGL(Invoice invoice) {
+        
+        // Entry 1: Revenue & Receivable
+        CreateJournalEntryRequest revenueEntry = new CreateJournalEntryRequest();
+        revenueEntry.setTenantId(invoice.getTenantId());
+        revenueEntry.setReferenceType("INVOICE");
+        revenueEntry.setReferenceId(invoice.getInvoiceNumber());
+        revenueEntry.setDescription("Sale - " + invoice.getCustomer().getName());
+        
+        List<PostingDetail> revenuePostings = new ArrayList<>();
+        
+        // DR Accounts Receivable
+        revenuePostings.add(new PostingDetail(
+            getAccountId("ACCOUNTS_RECEIVABLE"),
+            PostingType.DEBIT,
+            invoice.getTotalAmount()
+        ));
+        
+        // CR Sales Revenue
+        revenuePostings.add(new PostingDetail(
+            getAccountId("SALES_REVENUE"),
+            PostingType.CREDIT,
+            invoice.getSubtotal()
+        ));
+        
+        // CR GST Output
+        if (invoice.getTotalTax().compareTo(BigDecimal.ZERO) > 0) {
+            revenuePostings.add(new PostingDetail(
+                getAccountId("GST_OUTPUT"),
+                PostingType.CREDIT,
+                invoice.getTotalTax()
+            ));
+        }
+        
+        revenueEntry.setPostings(revenuePostings);
+        JournalEntryDTO revenueDiffer = journalService.createJournalEntry(revenueEntry);
+        journalService.postJournalEntry(revenueDiffer.getJournalId());
+        
+        // Entry 2: COGS
+        CreateJournalEntryRequest cogsEntry = new CreateJournalEntryRequest();
+        cogsEntry.setTenantId(invoice.getTenantId());
+        cogsEntry.setReferenceType("COGS");
+        cogsEntry.setReferenceId(invoice.getInvoiceNumber());
+        
+        List<PostingDetail> cogsPostings = new ArrayList<>();
+        BigDecimal totalCOGS = BigDecimal.ZERO;
+        
+        for (InvoiceLine line : invoice.getLines()) {
+            // DR COGS, CR Inventory
+            BigDecimal lineCOGS = line.getProduct().getCostPrice()
+                .multiply(new BigDecimal(line.getQuantity()));
+            totalCOGS = totalCOGS.add(lineCOGS);
+            
+            // Record inventory movement
+            StockMovementRequest stockMovement = new StockMovementRequest();
+            stockMovement.setTenantId(invoice.getTenantId());
+            stockMovement.setProductId(line.getProductId());
+            stockMovement.setTransactionType(TransactionType.SALE);
+            stockMovement.setQuantity(line.getQuantity());
+            stockMovement.setReferenceId(invoice.getInvoiceNumber());
+            
+            inventoryService.recordStockMovement(stockMovement);
+        }
+        
+        cogsPostings.add(new PostingDetail(
+            getAccountId("COGS"),
+            PostingType.DEBIT,
+            totalCOGS
+        ));
+        
+        cogsPostings.add(new PostingDetail(
+            getAccountId("INVENTORY"),
+            PostingType.CREDIT,
+            totalCOGS
+        ));
+        
+        cogsEntry.setPostings(cogsPostings);
+        JournalEntryDTO cogsDiffer = journalService.createJournalEntry(cogsEntry);
+        journalService.postJournalEntry(cogsDiffer.getJournalId());
+        
+        // Mark invoice as posted
+        invoice.setIsPosted(true);
+        invoice.setPostedAt(Instant.now());
+        invoice.setJournalId(revenueDiffer.getJournalId());
+    }
+    
+    private UUID getAccountId(String accountCode) {
+        // Retrieve from cache or database
+        // Implementation details...
+        return null;
+    }
+}
+```
+
+---
+
+## **Phase 2 Implementation Roadmap - Weeks 1-4**
+
+**Week 1-2: Database & ORM Mapping**
+
+```
+☐ Create PostgreSQL migration scripts
+☐ Define TypeORM entities (map from schema)
+☐ Create repository interfaces
+☐ Setup spring data repositories
+☐ Configure transaction management
+☐ Setup audit logging
+☐ Create sample Chart of Accounts
+```
+
+**Week 2-3: Core Accounting Services**
+
+```
+☐ Implement JournalEntryService
+☐ Implement GeneralLedgerService
+☐ Implement InventoryService (FIFO/Weighted)
+☐ Setup double-entry validation
+☐ Setup immutability enforcement
+☐ Create unit tests (>80% coverage)
+```
+
+**Week 3-4: Transaction Workflows**
+
+```
+☐ Implement invoicing → GL posting
+☐ Implement purchase orders → GL posting
+☐ Implement payment reconciliation
+☐ Implement B2B sync mechanism (EDI)
+☐ Setup real-time ledger updates (Redis)
+☐ Integration tests
+☐ Performance testing
+```
+
+---
+
+**Next Actions:**
+
+1. **Request approval** to proceed with Week 1-2 database implementation
+2. **Review security** - audit table access controls  
+3. **Setup environment** - Spring Boot properties, PostgreSQL connection
+4. **Prepare test data** - Sample Chart of Accounts, customers, products
+
+Ready to proceed? 🚀
+

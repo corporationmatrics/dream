@@ -1,0 +1,856 @@
+# 5️⃣ ROADMAP_AND_PHASES.md
+**Complete 24-Month Implementation Roadmap with Deliverables & Timeline**  
+**Last Updated:** February 7, 2026
+
+---
+
+## 📅 Executive Timeline
+
+```
+|← PHASE 1: MVP (0-6 months)→|← PHASE 2: Scale (6-12 months)→|← PHASE 3: Enterprise (12-18 months)→|← PHASE 4: Advanced (18-24 months)→|
+|   Feb 2026 - August 2026    |   August 2026 - Feb 2027      |   Feb 2027 - Aug 2027            |   Aug 2027 - Feb 2028           |
+|         ✅ IN PROGRESS       |         PLANNING               |         ROADMAP                   |         VISION                  |
+```
+
+---
+
+## 🎯 PHASE 1: MVP Foundation (Months 0-6)
+
+**Status:** ✅ 80% Complete  
+**Goal:** Launch production-ready core ERP  
+**Target Users:** 1,000 - 10,000 pilot users  
+**Team Size:** 5-6 people  
+**Effort:** 600-700 hours
+
+### **Month 0: Infrastructure & Foundation**
+
+#### **Week 1-2: DevOps & Infrastructure Setup** (40-50 hours)
+
+**Tasks:**
+- [ ] Set up Docker Compose with 10 services (PostgreSQL, Redis, MinIO, etc.)
+- [ ] Configure Kubernetes manifests (K3s, MicroK8s for dev)
+- [ ] Set up PostgreSQL 15 with schema migrations
+- [ ] Configure monitoring (Prometheus, Grafana)
+- [ ] Set up Git repositories (NestJS, Next.js, FastAPI)
+- [ ] Configure CI/CD pipeline (GitHub Actions or GitLab CI)
+
+**Deliverables:**
+- ✅ Docker Compose file with all services
+- ✅ PostgreSQL with 9 base tables
+- ✅ Monitoring dashboards
+- ✅ CI/CD pipeline configuration
+- ✅ Repository structure
+
+**Owner:** DevOps Engineer
+
+---
+
+#### **Week 3-4: Database & Cache Layer** (30-40 hours)
+
+**Tasks:**
+- [ ] Design database schema (9 core tables)
+- [ ] Create migration scripts (Flyway/Liquibase)
+- [ ] Load sample data (3 users, 6 products, 3 orders)
+- [ ] Configure KeyDB/Redis for caching
+- [ ] Set up connection pooling
+- [ ] Performance baseline testing
+
+**Deliverables:**
+- ✅ Complete schema with indexes
+- ✅ Migration scripts
+- ✅ Sample data with realistic values
+- ✅ Cache layer configuration
+- ✅ Performance baseline (query <50ms)
+
+**Owner:** Backend Engineer (Database)
+
+---
+
+#### **Week 5-6: API Gateway & Networking** (30-40 hours)
+
+**Tasks:**
+- [ ] Set up Nginx reverse proxy (dev)
+- [ ] Configure CORS and security headers
+- [ ] Set up rate limiting (50 req/min per user)
+- [ ] Implement request logging
+- [ ] Health check endpoints
+- [ ] Load testing infrastructure
+
+**Deliverables:**
+- ✅ Reverse proxy configured
+- ✅ Security headers in place
+- ✅ Rate limiting rules
+- ✅ Request logging
+- ✅ Load testing scripts
+
+**Owner:** DevOps Engineer
+
+---
+
+### **Month 1: Backend API (Authentication & Products)**
+
+#### **Week 1-2: Authentication System** (30-40 hours)
+
+**Endpoints:**
+```
+✅ POST /auth/register
+✅ POST /auth/login  
+✅ GET  /auth/profile (protected)
+```
+
+**Tasks:**
+- [x] JWT token generation & validation
+- [x] Password hashing (bcrypt)
+- [x] User registration with validation
+- [x] Login with credential verification
+- [x] Protected route middleware
+- [x] Token refresh mechanism
+- [x] Account lockout after failed attempts
+
+**Deliverables:**
+- ✅ 3 auth endpoints
+- ✅ JWT implementation
+- ✅ Password security
+- ✅ Rate limiting on login
+- ✅ Comprehensive error handling
+
+**Test Accounts:**
+- admin@test.com / Admin123
+- user@test.com / User123
+
+**Owner:** Backend Engineer (Auth)
+
+---
+
+#### **Week 3-4: Products Module** (35-45 hours)
+
+**Endpoints:**
+```
+✅ GET    /products (paginated)
+✅ POST   /products (admin)
+✅ GET    /products/:id
+✅ PUT    /products/:id (admin)
+✅ DELETE /products/:id (admin)
+✅ GET    /search?q=keyword
+```
+
+**Tasks:**
+- [x] Product CRUD operations
+- [x] Pagination implementation
+- [x] Full-text search (Meilisearch)
+- [x] Category filtering
+- [x] Stock management
+- [x] Caching strategy (KeyDB)
+- [x] Swagger documentation
+
+**Deliverables:**
+- ✅ 6 product endpoints
+- ✅ Search functionality
+- ✅ In-memory caching
+- ✅ API documentation
+- ✅ 6 sample products
+
+**Owner:** Backend Engineer (Products)
+
+---
+
+#### **Week 5-6: Orders Module** (40-50 hours)
+
+**Endpoints:**
+```
+✅ POST   /orders (protected)
+✅ GET    /orders (protected)
+✅ GET    /orders/:id (protected)
+✅ PUT    /orders/:id/status (admin)
+✅ DELETE /orders/:id (protected)
+```
+
+**Tasks:**
+- [x] Order creation with validation
+- [x] Stock reduction on order
+- [x] Stock restoration on cancel
+- [x] Order status workflow
+- [x] Tax calculation (18% GST)
+- [x] Line item tracking
+- [x] Auto-invoice generation
+- [x] Order history pagination
+
+**Deliverables:**
+- ✅ 5 order endpoints
+- ✅ Order workflow
+- ✅ Automatic calculations
+- ✅ 3 sample orders
+- ✅ Comprehensive testing
+
+**Owner:** Backend Engineer (Orders)
+
+---
+
+### **Month 2: Frontend Pages & UI**
+
+#### **Week 1-2: shadcn/ui Integration** (20-25 hours)
+
+**Tasks:**
+- [x] Initialize shadcn/ui in Next.js
+- [x] Install 18 core components
+- [x] Configure Tailwind CSS v4
+- [x] Set up dark mode
+- [x] Create reusable components
+- [x] CSS variable theming
+
+**Deliverables:**
+- ✅ shadcn/ui fully integrated
+- ✅ 18 components installed
+- ✅ Dark mode working
+- ✅ Component library ready
+
+**Owner:** Frontend Engineer (UI)
+
+---
+
+#### **Week 3-4: Core Pages** (40-50 hours)
+
+**Pages Built:**
+1. **Login Page** (/auth/login)
+   - Email & password inputs
+   - Form validation
+   - Error messages
+   - Register link
+   - Demo credentials
+
+2. **Dashboard** (/dashboard)
+   - Welcome message
+   - Statistics cards (4)
+   - Recent orders table
+   - Quick action buttons
+   - Responsive grid
+
+3. **Products Page** (/products)
+   - Product grid
+   - Real-time search
+   - Filters (category, price)
+   - Pagination
+   - Stock status
+   - Add to cart button
+
+4. **Orders Page** (/orders)
+   - Orders table
+   - Status filtering
+   - Date filtering
+   - Order details
+   - Cancel button
+
+5. **Product Detail** (/products/[id])
+   - Full product info
+   - Stock status
+   - Add to cart
+   - Related products
+
+6. **Checkout** (/checkout)
+   - Cart summary
+   - Address form
+   - Tax calculation
+   - Confirm order
+
+7. **Profile** (/profile)
+   - User info
+   - Security settings
+   - Preferences
+   - Logout button
+
+**Deliverables:**
+- ✅ 7 complete pages
+- ✅ All shadcn components
+- ✅ Responsive design
+- ✅ Error handling
+- ✅ API integration
+
+**Owner:** Frontend Engineer (Pages)
+
+---
+
+#### **Week 5-6: Integration & Refinement** (25-35 hours)
+
+**Tasks:**
+- [x] API integration (all 14 endpoints)
+- [x] Error handling with fallbacks
+- [x] Loading states & spinners
+- [x] Toast notifications
+- [x] Form validation
+- [x] Responsive testing (mobile, tablet)
+
+**Deliverables:**
+- ✅ Full-stack integration
+- ✅ Mock data fallback
+- ✅ Complete error handling
+- ✅ Mobile responsive
+- ✅ All pages tested
+
+**Owner:** Frontend Engineer + Backend Engineer
+
+---
+
+### **Months 3-4: Testing, Optimization & Documentation**
+
+#### **Performance Tuning** (40-50 hours)
+
+**Tasks:**
+- [ ] Database query optimization (add indexes)
+- [ ] API response time reduction
+- [ ] Frontend build optimization
+- [ ] Image compression & CDN readiness
+- [ ] Caching strategy refinement
+- [ ] Load testing (1K req/sec target)
+
+**Benchmarks to Achieve:**
+- API response time (p95): <100ms ✅
+- Database query (p95): <50ms ✅
+- Page load time: <2 seconds
+- Cache hit ratio: 80%+
+- Concurrent users: 1,000+
+
+**Owner:** QA Engineer + Backend Engineer
+
+---
+
+#### **Testing & QA** (50-60 hours)
+
+**Tasks:**
+- [ ] Unit tests (Jest - backend)
+- [ ] Integration tests (API endpoints)
+- [ ] E2E tests (Cypress - frontend)
+- [ ] API testing (Postman/Insomnia)
+- [ ] Security testing
+- [ ] Load testing (Apache JMeter)
+- [ ] Browser compatibility
+- [ ] Mobile responsiveness
+
+**Coverage Targets:**
+- Backend code coverage: 80%+
+- Critical path coverage: 100%
+- API endpoint coverage: 100%
+- Frontend page coverage: 100%
+
+**Owner:** QA Engineer
+
+---
+
+#### **Documentation & Knowledge Transfer** (30-40 hours)
+
+**Deliverables:**
+- [ ] API documentation (Swagger/OpenAPI)
+- [ ] Setup guides
+- [ ] Deployment guides
+- [ ] Troubleshooting guides
+- [ ] Architecture diagrams
+- [ ] Database schema documentation
+- [ ] Code style guide
+
+**Owner:** Technical Writer + Leads
+
+---
+
+### **Months 5-6: Security Audit & Production Deployment**
+
+#### **Security Hardening** (30-40 hours)
+
+**Tasks:**
+- [ ] OWASP top 10 review
+- [ ] Penetration testing
+- [ ] SQL injection prevention audit
+- [ ] XSS prevention verification
+- [ ] CSRF token implementation
+- [ ] SSL/TLS certificate setup
+- [ ] Secrets management
+- [ ] Access control verification
+
+**Deliverables:**
+- ✅ Security audit report
+- ✅ Vulnerabilities fixed
+- ✅ Secrets in vault (not .env)
+- ✅ SSL certificates installed
+- ✅ Access controls configured
+
+**Owner:** Security Engineer (if available) or Senior Backend
+
+---
+
+#### **Production Deployment** (20-30 hours)
+
+**Tasks:**
+- [ ] Set up production database
+- [ ] Configure production environment
+- [ ] Enable backups & disaster recovery
+- [ ] Set up monitoring alerting
+- [ ] Configure log aggregation
+- [ ] Deploy to staging
+- [ ] Smoke testing
+- [ ] Deploy to production
+- [ ] Set up status page
+
+**Deliverables:**
+- ✅ Production environment
+- ✅ Monitoring configured
+- ✅ Backups automated
+- ✅ Alerts active
+- ✅ Status page
+
+**Owner:** DevOps Engineer
+
+---
+
+#### **UAT & Pilot Launch** (40-50 hours)
+
+**Tasks:**
+- [ ] Pilot user onboarding (100-500 users)
+- [ ] Feedback collection
+- [ ] Issue triage
+- [ ] Bug fixes (critical path)
+- [ ] Performance monitoring
+- [ ] Usage analytics
+- [ ] Success metrics tracking
+
+**Success Metrics:**
+- System uptime: 99%+
+- Response time: <100ms p95
+- User satisfaction: 4.0/5.0+
+- Critical bugs: 0
+
+**Owner:** QA + Product Team
+
+---
+
+### **Phase 1 Deliverables Summary**
+
+**Code:**
+- ✅ NestJS backend (3 modules, 14 endpoints)
+- ✅ Next.js frontend (7 pages, 18 components)
+- ✅ TypeScript throughout
+- ✅ Comprehensive error handling
+- ✅ Full test coverage
+
+**Infrastructure:**
+- ✅ Docker Compose (10 services)
+- ✅ PostgreSQL with schema
+- ✅ Redis/KeyDB caching
+- ✅ Monitoring (Prometheus + Grafana)
+- ✅ CI/CD pipeline
+
+**Documentation:**
+- ✅ API documentation (Swagger)
+- ✅ Setup guides
+- ✅ Architecture docs
+- ✅ Troubleshooting guides
+- ✅ Code examples
+
+**Team & Process:**
+- ✅ Dev team trained
+- ✅ Documentation complete
+- ✅ Monitoring active
+- ✅ Support process defined
+- ✅ Runbook prepared
+
+---
+
+## 📅 PHASE 2: Scale & Mobile (Months 6-12)
+
+**Goal:** Add B2B features, mobile app, advanced integrations  
+**Target Users:** 10,000 - 100,000  
+**Team Size:** 8-10 people  
+**Effort:** 900-1,100 hours  
+
+### **High-Level Goals**
+
+#### **Month 6-7: OAuth2 & MongoDB Integration** (120-150 hours)
+- Keycloak deployment & configuration
+- MongoDB for IoT/telemetry data
+- User federation (LDAP/AD)
+- 2FA setup
+- SMS verification
+
+**Key Deliverables:**
+- ✅ Keycloak realm configured
+- ✅ OAuth2 flow working
+- ✅ MongoDB schema designed
+- ✅ 3 MongoDB collections (devices, telemetry, logs)
+- ✅ IoT data ingestion working
+
+---
+
+#### **Month 8-9: FastAPI & OCR Integration** (150-180 hours)
+- FastAPI microservice setup
+- PaddleOCR-VL integration
+- Invoice processing pipeline
+- Document upload & parsing
+- OCR accuracy testing
+
+**Key Deliverables:**
+- ✅ FastAPI running on port 5000
+- ✅ OCR processing >95% accuracy
+- ✅ Invoice extraction working
+- ✅ Document storage in MinIO
+- ✅ Batch processing capability
+
+---
+
+#### **Month 9-10: Mobile App (React Native + Expo)** (150-200 hours)
+- React Native setup
+- Expo OTA updates
+- Native modules (camera, GPS, notifications)
+- 80% code sharing with web
+- Mobile-specific UI
+
+**Key Deliverables:**
+- ✅ iOS & Android apps
+- ✅ App Store & Play Store ready
+- ✅ OTA update system
+- ✅ Offline-first capability
+- ✅ Push notifications
+
+---
+
+#### **Month 10-11: B2B Features** (120-150 hours)
+- Multi-organization support
+- Reverse auction system
+- EDI document processing
+- Supplier management
+- Purchase order workflow
+
+**Key Deliverables:**
+- ✅ Multi-tenant architecture
+- ✅ Reverse auction working
+- ✅ EDI messages processing
+- ✅ Supplier portal
+- ✅ PO approval workflow
+
+---
+
+#### **Month 11-12: Real-time Features & Optimization** (100-150 hours)
+- WebSocket implementation (Socket.io)
+- Real-time order updates
+- Live search
+- Advanced caching
+- Performance optimization
+
+**Key Deliverables:**
+- ✅ Real-time notifications
+- ✅ Live product updates
+- ✅ Order status push updates
+- ✅ <50ms response times
+- ✅ 100K+ concurrent users support
+
+---
+
+### **Phase 2 Deliverables**
+
+- ✅ Keycloak OAuth2 integration
+- ✅ MongoDB for IoT data
+- ✅ FastAPI microservice
+- ✅ PaddleOCR-VL OCR
+- ✅ React Native mobile app
+- ✅ WebSocket real-time features
+- ✅ B2B reverse auctions
+- ✅ EDI document processing
+- ✅ Advanced search
+- ✅ Mobile parity with web
+
+---
+
+## 📅 PHASE 3: Enterprise & Optimization (Months 12-18)
+
+**Goal:** Enterprise-grade scaling, advanced features  
+**Target Users:** 100,000+  
+**Team Size:** 12-15 people  
+**Effort:** 1,200-1,500 hours
+
+### **High-Level Components**
+
+#### **Months 12-13: Apache APISIX Gateway** (100-120 hours)
+- API gateway deployment
+- Route management
+- Rate limiting per customer
+- JWT validation
+- Request transformation
+- Load balancing
+
+---
+
+#### **Months 13-14: Kafka Event Streaming** (120-150 hours)
+- Kafka cluster setup
+- Event topics design
+- Producer/consumer implementation
+- Event-driven architecture
+- Message routing
+- Advanced monitoring
+
+---
+
+#### **Months 14-15: TimescaleDB & Analytics** (120-150 hours)
+- TimescaleDB setup (PostgreSQL extension)
+- Time-series data ingestion
+- GPS tracking storage
+- Aggregation queries
+- Grafana dashboards
+- Real-time analytics
+
+---
+
+#### **Months 15-16: LSTM Demand Forecasting** (100-150 hours)
+- LSTM model training
+- Prophet time-series
+- Demand prediction pipeline
+- FastAPI endpoint for predictions
+- Inventory optimization
+- Automated restocking
+
+---
+
+#### **Months 16-18: Multi-Region & Scaling** (150-200 hours)
+- Database replication
+- Read replicas
+- Horizontal sharding strategy
+- CDN integration
+- Multi-region deployment
+- Disaster recovery testing
+
+---
+
+### **Phase 3 Deliverables**
+
+- ✅ Apache APISIX API gateway
+- ✅ Kafka event streaming
+- ✅ TimescaleDB time-series
+- ✅ LSTM forecasting
+- ✅ Multi-region deployment
+- ✅ Database sharding
+- ✅ Advanced analytics
+- ✅ CDN integration
+- ✅ Disaster recovery
+- ✅ 99.9% uptime SLA
+
+---
+
+## 📅 PHASE 4: Advanced Features (Months 18-24)
+
+**Goal:** Cutting-edge capabilities, competitive advantage  
+**Target Users:** 1,000,000+  
+**Team Size:** 15-20 people  
+**Effort:** 1,500-2,000 hours
+
+### **High-Level Components**
+
+#### **Months 18-19: Blockchain Supply Chain** (100-150 hours)
+- Hyperledger Fabric setup
+- Smart contracts for orders
+- Immutable audit log
+- Supplier verification
+- Transparency layer
+
+---
+
+#### **Months 19-20: IoT Device Integration** (100-150 hours)
+- IoT sensor management
+- Real-time data collection
+- AlertingRules
+- Device firmware updates
+- Edge computing
+
+---
+
+#### **Months 20-21: Voice Commerce** (100-150 hours)
+- Speech-to-text (regional languages)
+- Natural language processing
+- Order placement by voice
+- Voice assistant (24/7 support)
+- AI chatbot
+
+---
+
+#### **Months 21-22: AR Inventory Scanning** (100-150 hours)
+- AR app development
+- 3D product rendering
+- Virtual try-on
+- Inventory visualization
+- Barcode/QR code scanning
+
+---
+
+#### **Months 22-24: Advanced ML Pipelines** (150-200 hours)
+- Recommendation engine
+- Personalization
+- Customer churn prediction
+- Fraud detection
+- Dynamic pricing
+
+---
+
+### **Phase 4 Deliverables**
+
+- ✅ Blockchain supply chain tracking
+- ✅ IoT device management
+- ✅ Voice commerce (Hindi + regional languages)
+- ✅ AR inventory scanning
+- ✅ Advanced ML models
+- ✅ Recommendation engine
+- ✅ Fraud detection
+- ✅ Dynamic pricing
+
+---
+
+## 📊 Resource Allocation by Phase
+
+### **Phase 1 (MVP)**
+- 2 Backend Engineers (NestJS)
+- 1-2 Frontend Engineers (React/Next.js)
+- 1 DevOps Engineer
+- 1 QA Engineer
+- **Total: 5-6 people**
+
+### **Phase 2 (Scale)**
+- +1 Backend Engineer (microservices)
+- +1 ML Engineer (FastAPI, OCR)
+- +1 Mobile Developer (React Native)
+- +1 QA Engineer (automation)
+- **Total: 8-10 people**
+
+### **Phase 3 (Enterprise)**
+- +1 DevOps/SRE (Kubernetes, scaling)
+- +1 Database Architect
+- +1 Security Specialist
+- +1 Technical Writer
+- **Total: 12-15 people**
+
+### **Phase 4 (Advanced)**
+- +2-3 ML Engineers (advanced models)
+- +1 Blockchain Developer
+- +1 IoT Specialist
+- +1-2 Additional Architects
+- **Total: 15-20 people**
+
+---
+
+## 💰 Cost Estimation (Approximate)
+
+| Phase | Duration | Team Size | Cost (₹) | US$ |
+|-------|----------|-----------|----------|-----|
+| Phase 1 | 6 months | 5-6 | 35-45 L | 40-50K |
+| Phase 2 | 6 months | 8-10 | 60-80 L | 70-95K |
+| Phase 3 | 6 months | 12-15 | 100-130 L | 120-155K |
+| Phase 4 | 6 months | 15-20 | 130-170 L | 155-200K |
+| **Total** | 24 months | Avg 10-12 | **325-425 L** | **385-500K** |
+
+**Note:** Costs include salaries, infrastructure, tools, hosting (~₹20-30L/month for Phase 3+)
+
+---
+
+## ✅ Success Metrics by Phase
+
+### **Phase 1 (MVP)**
+- System uptime: 99%+
+- API response time (p95): <100ms
+- User satisfaction: 4.0+/5.0
+- Critical bugs: 0 in production
+- Test coverage: 80%+
+
+### **Phase 2 (Scale)**
+- Concurrent users: 10K-100K
+- System uptime: 99.5%
+- API response time (p95): <50ms
+- Mobile app rating: 4.2+/5.0
+- Feature adoption: 60%+
+
+### **Phase 3 (Enterprise)**
+- Concurrent users: 100K+
+- System uptime: 99.9%
+- API response time (p95): <30ms
+- Multi-region latency: <100ms
+- Database query time: <20ms
+
+### **Phase 4 (Advanced)**
+- Concurrent users: 1M+
+- System uptime: 99.99%
+- API response time (p95): <20ms
+- AI model accuracy: 90%+
+- Revenue per user: 3x Phase 1
+
+---
+
+## 🎯 Go/No-Go Criteria
+
+### **Phase 1 → Phase 2**
+- [ ] Production uptime: 99%+
+- [ ] All critical endpoints working
+- [ ] Performance benchmarks met
+- [ ] Security audit passed
+- [ ] User satisfaction: 4.0+/5.0
+
+### **Phase 2 → Phase 3**
+- [ ] 10K+ active users
+- [ ] 99.5% uptime sustained
+- [ ] Mobile app launched
+- [ ] B2B features working
+- [ ] Revenue model validated
+
+### **Phase 3 → Phase 4**
+- [ ] 100K+ active users
+- [ ] 99.9% uptime sustained
+- [ ] Multi-region deployment
+- [ ] Advanced features requested
+- [ ] Investment available
+
+---
+
+## 📈 Revenue Model (Optional)
+
+| Phase | Model | Potential Revenue/Month |
+|-------|-------|------------------------|
+| Phase 1 | Free (pilot users) | ₹0 |
+| Phase 2 | Freemium + SaaS | ₹5-10 L |
+| Phase 3 | Enterprise SaaS | ₹25-50 L |
+| Phase 4 | Enterprise + API | ₹50-100+ L |
+
+---
+
+## 🔄 Dependencies Between Phases
+
+```
+Phase 1: Foundation (Infrastructure, Auth, Products, Orders)
+   ↓
+Phase 2: Scale (Keycloak, MongoDB, OCR, Mobile)
+   ├─ Depends on: Phase 1 APIs, User base
+   ↓
+Phase 3: Enterprise (APISIX, Kafka, TimescaleDB, Forecasting)
+   ├─ Depends on: Phase 2 features, 100K+ users, Infrastructure
+   ↓
+Phase 4: Advanced (Blockchain, IoT, Voice, AR)
+   └─ Depends on: Phase 3 stability, Investment
+```
+
+---
+
+## 📞 Next Steps
+
+### **Immediate (February 7-12, 2026)**
+- [ ] Complete Phase 1 authentication tests
+- [ ] Begin Keycloak OAuth2 deployment
+- [ ] Performance benchmarking
+- [ ] Team expansion planning
+
+### **Short-term (February 12 - March 1, 2026)**
+- [ ] MongoDB integration
+- [ ] FastAPI setup
+- [ ] PaddleOCR-VL integration
+- [ ] Mobile app framework (React Native)
+
+### **Medium-term (March - May 2026)**
+- [ ] Complete Phase 2 features
+- [ ] Pilot with 100+ users
+- [ ] Gather feedback
+- [ ] Plan Phase 3
+
+---
+
+**Last Updated:** February 7, 2026
+
+**Roadmap Version:** 1.0  
+**Next Review:** March 31, 2026

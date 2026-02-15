@@ -1,0 +1,11 @@
+# Local development profile: use localhost Postgres and Redis
+# Run with: --spring.profiles.active=local
+# Matches this repo's Docker Compose (postgres/postgres/erp) when DB runs in Docker.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/erp
+    username: postgres
+    password: postgres
+  redis:
+    host: localhost
+    port: 6379

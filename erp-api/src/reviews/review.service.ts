@@ -68,7 +68,8 @@ export class ReviewService {
         createdAt: true,
         user: {
           id: true,
-          name: true,
+          firstName: true,
+          lastName: true,
         },
       },
     });

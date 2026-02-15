@@ -1,0 +1,614 @@
+# 4️⃣ DEVELOPER_QUICK_REFERENCE.md
+**Daily Developer Commands, API Reference & Common Tasks**  
+**Last Updated:** February 7, 2026
+
+---
+
+## ⚡ Quick Start Commands
+
+```bash
+# START PROJECT (Run in separate terminals)
+Terminal 1 - Frontend:
+  cd erp-web
+  npm install
+  npm run dev           # http://localhost:3000
+
+Terminal 2 - Backend:
+  cd erp-api
+  npm install
+  npm run start:dev     # http://localhost:3002
+
+Terminal 3 - Docker Services:
+  docker-compose up -d
+  docker-compose ps      # Verify all 10 running
+
+# TEST EVERYTHING
+curl http://localhost:3000                              # Frontend up?
+curl http://localhost:3002/health                       # Backend up?
+curl http://localhost:3002/products                     # API working?
+```
+
+---
+
+## 🔐 Authentication Quick Reference
+
+### **Test Accounts**
+```
+Email: admin@test.com
+Password: Admin123
+
+Email: user@test.com
+Password: User123
+```
+
+### **Get JWT Token**
+```bash
+curl -X POST http://localhost:3002/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@test.com","password":"Admin123"}'
+
+# Response:
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {"id": 1, "email": "admin@test.com", "name": "Admin"}
+}
+```
+
+### **Use Token in Requests**
+```bash
+curl http://localhost:3002/auth/profile \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+---
+
+## 📝 API Endpoints Reference
+
+### **Authentication**
+```
+POST   /auth/register
+  Body: {"email": "user@test.com", "name": "User", "password": "Pass123"}
+
+POST   /auth/login
+  Body: {"email": "user@test.com", "password": "Pass123"}
+
+GET    /auth/profile (protected)
+  Header: Authorization: Bearer <token>
+```
+
+### **Products**
+```
+GET    /products                    # List all products
+  Query: ?page=1&limit=10
+
+GET    /products/:id                # Get single product
+
+POST   /products (admin)             # Create product
+  Body: {
+    "name": "Rice",
+    "sku": "RICE-1KG",
+    "price": 450,
+    "stock": 100,
+    "category": "Grains"
+  }
+
+PUT    /products/:id (admin)         # Update product
+  Body: { "price": 500, "stock": 50 }
+
+DELETE /products/:id (admin)         # Delete product
+
+GET    /search?q=rice               # Search products
+```
+
+### **Orders**
+```
+POST   /orders (protected)           # Create order
+  Body: {
+    "items": [
+      {"productId": 1, "quantity": 2},
+      {"productId": 3, "quantity": 1}
+    ]
+  }
+
+GET    /orders (protected)           # List user's orders
+  Query: ?page=1&limit=10
+
+GET    /orders/:id (protected)       # Get order details
+
+PUT    /orders/:id/status (admin)    # Update status
+  Body: {"status": "shipped"}
+
+DELETE /orders/:id (protected)       # Cancel order
+```
+
+---
+
+## 🛠️ Common Development Tasks
+
+### **Add New API Endpoint**
+
+```bash
+# 1. Create DTO (Data Transfer Object)
+cat > erp-api/src/invoices/dto/create-invoice.dto.ts << 'EOF'
+import { IsNumber, IsString } from 'class-validator';
+
+export class CreateInvoiceDto {
+  @IsNumber()
+  orderId: number;
+
+  @IsString()
+  documentNumber: string;
+}
+EOF
+
+# 2. Create Entity
+cat > erp-api/src/invoices/entities/invoice.entity.ts << 'EOF'
+import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+
+@Entity('invoices')
+export class Invoice {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  orderId: number;
+
+  @Column()
+  documentNumber: string;
+
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
+}
+EOF
+
+# 3. Create Service
+cat > erp-api/src/invoices/invoices.service.ts << 'EOF'
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Invoice } from './entities/invoice.entity';
+import { CreateInvoiceDto } from './dto/create-invoice.dto';
+
+@Injectable()
+export class InvoicesService {
+  constructor(
+    @InjectRepository(Invoice) private repo: Repository<Invoice>,
+  ) {}
+
+  create(createInvoiceDto: CreateInvoiceDto) {
+    return this.repo.save(createInvoiceDto);
+  }
+
+  findAll() {
+    return this.repo.find();
+  }
+
+  findOne(id: number) {
+    return this.repo.findOne({ where: { id } });
+  }
+}
+EOF
+
+# 4. Create Controller
+cat > erp-api/src/invoices/invoices.controller.ts << 'EOF'
+import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { InvoicesService } from './invoices.service';
+import { CreateInvoiceDto } from './dto/create-invoice.dto';
+
+@Controller('invoices')
+export class InvoicesController {
+  constructor(private service: InvoicesService) {}
+
+  @Post()
+  create(@Body() createInvoiceDto: CreateInvoiceDto) {
+    return this.service.create(createInvoiceDto);
+  }
+
+  @Get()
+  findAll() {
+    return this.service.findAll();
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.service.findOne(+id);
+  }
+}
+EOF
+
+# 5. Update Module
+# Add InvoicesService and InvoicesController to InvoicesModule and AppModule
+
+# 6. Test
+npm run start:dev
+curl -X POST http://localhost:3002/invoices \
+  -H "Content-Type: application/json" \
+  -d '{"orderId": 1, "documentNumber": "INV-001"}'
+```
+
+### **Add New Frontend Page**
+
+```bash
+# 1. Create directory
+mkdir -p erp-web/src/app/invoices
+
+# 2. Create page component
+cat > erp-web/src/app/invoices/page.tsx << 'EOF'
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useContext } from 'react';
+import { AuthContext } from '@/contexts/AuthContext';
+import { Card } from '@/components/ui/card';
+import { Table, TableHeader, TableBody, TableRow, TableCell } from '@/components/ui/table';
+
+export default function InvoicesPage() {
+  const router = useRouter();
+  const authContext = useContext(AuthContext);
+  const [invoices, setInvoices] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!authContext?.token) {
+      router.push('/auth/login');
+      return;
+    }
+
+    fetchInvoices();
+  }, [authContext?.token]);
+
+  const fetchInvoices = async () => {
+    try {
+      const response = await fetch('http://localhost:3002/invoices', {
+        headers: {
+          'Authorization': `Bearer ${authContext?.token}`,
+        },
+      });
+      const data = await response.json();
+      setInvoices(data);
+    } catch (error) {
+      console.error('Error fetching invoices:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-6">Invoices</h1>
+
+      {loading ? (
+        <p>Loading...</p>
+      ) : (
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableCell>ID</TableCell>
+                <TableCell>Document Number</TableCell>
+                <TableCell>Order ID</TableCell>
+                <TableCell>Date</TableCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {invoices.map((inv) => (
+                <TableRow key={inv.id}>
+                  <TableCell>{inv.id}</TableCell>
+                  <TableCell>{inv.documentNumber}</TableCell>
+                  <TableCell>{inv.orderId}</TableCell>
+                  <TableCell>{new Date(inv.createdAt).toLocaleDateString()}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+    </div>
+  );
+}
+EOF
+
+# 3. Add route to navigation
+# Update erp-web/src/components/Navigation.tsx to include /invoices link
+
+# 4. Test
+npm run dev
+# Visit http://localhost:3000/invoices
+```
+
+---
+
+## 🐛 Debugging Tips
+
+### **Backend Debugging**
+
+```bash
+# 1. Add console.log
+console.log('User:', user);
+console.log('Token:', token);
+
+# 2. Check logs
+docker-compose logs erp-api -f
+
+# 3. Use debugger
+# Add to .vscode/launch.json
+{
+  "type": "node",
+  "request": "attach",
+  "name": "Attach",
+  "port": 9229
+}
+
+# 4. Set breakpoints in VS Code
+# Press F5 to start debugging
+
+# 5. Check environment variables
+console.log('JWT_SECRET:', process.env.JWT_SECRET);
+console.log('DATABASE_URL:', process.env.DATABASE_URL);
+```
+
+### **Frontend Debugging**
+
+```bash
+# 1. Chrome DevTools (F12)
+# - Console tab: check for errors
+# - Network tab: see API requests
+# - Application tab: check localStorage tokens
+
+# 2. React DevTools extension
+# - Check component state and props
+# - Profile component performance
+
+# 3. Next.js Debugger
+# browser://dj2343kd23 link appears in terminal
+
+# 4. Common issues:
+# - Token not sent: Check Authorization header
+# - CORS error: Check backend CORS config
+# - 401 Unauthorized: Token expired or invalid
+# - Type errors: Check TypeScript compilation (npm run build)
+```
+
+---
+
+## 📦 Dependency Management
+
+### **Update Dependencies**
+
+```bash
+# Check outdated packages
+npm outdated
+
+# Update all packages (safe)
+npm update
+
+# Update major versions (breaking changes possible)
+npm upgrade
+
+# Install specific version
+npm install lodash@4.17.21
+
+# Remove unused dependencies
+npm prune
+```
+
+### **Common Packages Reference**
+
+**Frontend:**
+- `next` - React framework
+- `react` - UI library
+- `zustand` - State management
+- `axios` or `fetch` - HTTP client
+- `tailwindcss` - Styling
+- `lucide-react` - Icons
+
+**Backend:**
+- `@nestjs/core` - NestJS framework
+- `typeorm` - Database ORM
+- `@nestjs/jwt` - JWT authentication
+- `bcryptjs` - Password hashing
+- `class-validator` - DTO validation
+- `@nestjs/config` - Environment config
+
+---
+
+## 🧪 Testing Commands
+
+```bash
+# Run backend tests
+cd erp-api
+npm test                    # Run all tests
+npm test -- --watch        # Watch mode
+npm test -- --coverage     # Coverage report
+
+# Run frontend tests
+cd erp-web
+npm test                    # Jest tests
+npm run cypress open        # Cypress E2E tests
+
+# Test API manually
+npm run test:api            # Custom API test script
+
+# Generate coverage report
+npm run test:coverage
+```
+
+---
+
+## 📊 Database Commands
+
+```bash
+# Connect to PostgreSQL
+psql -h localhost -U postgres -d erp_platform
+
+# Common queries
+SELECT * FROM users LIMIT 10;
+SELECT COUNT(*) FROM products;
+SELECT * FROM orders WHERE status = 'pending';
+
+# Backup database
+pg_dump -h localhost -U postgres -d erp_platform > backup.sql
+
+# Restore database
+psql -h localhost -U postgres -d erp_platform < backup.sql
+
+# Reset database
+DROP DATABASE erp_platform;
+CREATE DATABASE erp_platform;
+# Run migrations
+
+# Access PgAdmin UI
+# URL: http://localhost:5050
+# Email: admin@admin.com
+# Password: admin
+```
+
+---
+
+## 🔍 Useful Tools & URLs
+
+```
+Frontend:             http://localhost:3000
+Backend:              http://localhost:3002
+API Docs:             http://localhost:3002/api-docs
+Grafana:              http://localhost:3001
+Prometheus:           http://localhost:9091
+PgAdmin:              http://localhost:5050
+MinIO Console:        http://localhost:9001
+Keycloak:             http://localhost:8080 (Phase 2)
+Meilisearch:          http://localhost:7700
+```
+
+---
+
+## 🚀 Code Style & Best Practices
+
+### **TypeScript**
+```typescript
+// DO: Proper typing
+const user: User = await userService.findOne(id);
+const count: number = users.length;
+
+// DON'T: Any type
+const user: any = await userService.findOne(id);
+```
+
+### **NestJS**
+```typescript
+// DO: Use dependency injection
+@Injectable()
+export class UserService {
+  constructor(
+    @InjectRepository(User) private repo: Repository<User>,
+    private cacheService: CacheService,
+  ) {}
+}
+
+// DON'T: Manual instantiation
+const repo = new Repository();
+```
+
+### **React**
+```typescript
+// DO: Use hooks correctly
+useEffect(() => {
+  fetchData();
+}, [dependency]);
+
+// DON'T: Missing dependencies
+useEffect(() => {
+  fetchData(id); // Should include id in dependency array
+});
+```
+
+### **SQL**
+```sql
+-- DO: Use parameterized queries (ORM)
+const users = await this.repo.find({ where: { email } });
+
+-- DON'T: String concatenation
+const users = await db.query(`SELECT * FROM users WHERE email = '${email}'`);
+```
+
+---
+
+## 🔧 File Structure Quick Reference
+
+```
+erp-api/
+├── src/
+│   ├── auth/               # Authentication module
+│   ├── products/           # Product management
+│   ├── orders/             # Order management
+│   ├── common/             # Shared utilities
+│   └── main.ts             # Entry point
+
+erp-web/
+├── src/
+│   ├── app/                # Next.js pages (app router)
+│   ├── components/         # React components
+│   ├── contexts/           # React contexts (auth, etc.)
+│   ├── lib/                # Utility functions
+│   └── styles/             # Global styles
+```
+
+---
+
+## 🚨 Common Errors & Solutions
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Cannot find module` | Missing dependency | `npm install` |
+| `Port 3000 in use` | Another process using port | `lsof -i :3000` and kill process |
+| `CORS error` | Frontend/backend domain mismatch | Check origin in backend CORS config |
+| `401 Unauthorized` | Missing or invalid JWT | Check token in localStorage, login again |
+| `Database connection failed` | PostgreSQL not running | `docker-compose up -d postgresql` |
+| `Cannot read property 'length'` | Null/undefined value | Add null checks, use optional chaining |
+| `npm ERR!` | Module conflict/cache issue | `npm cache clean --force && npm install` |
+
+---
+
+## 📝 Git Workflow
+
+```bash
+# Create feature branch
+git checkout -b feature/user-profile
+
+# Make changes
+git add .
+git commit -m "Add user profile page"
+
+# Push to remote
+git push origin feature/user-profile
+
+# Create merge request
+# (On GitLab/GitHub)
+
+# After approval, merge to main
+git checkout main
+git merge feature/user-profile
+git push origin main
+
+# Delete branch
+git branch -d feature/user-profile
+```
+
+---
+
+## 🎯 Daily Checklist
+
+- [ ] Start Docker services: `docker-compose up -d`
+- [ ] Start backend: `npm run start:dev` (erp-api)
+- [ ] Start frontend: `npm run dev` (erp-web)
+- [ ] Check logs for errors: `docker-compose logs -f`
+- [ ] Test login: `http://localhost:3000/auth/login`
+- [ ] Test API: `curl http://localhost:3002/health`
+- [ ] Commit work: `git add . && git commit -m "..."`
+- [ ] Push changes: `git push origin feature/...`
+- [ ] Create merge request (if feature complete)
+- [ ] Review code standards: Run `npm lint`
+
+---
+
+**Last Updated:** February 7, 2026

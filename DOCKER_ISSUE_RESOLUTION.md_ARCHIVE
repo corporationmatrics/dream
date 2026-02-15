@@ -1,0 +1,673 @@
+# 🐳 DOCKER ISSUE RESOLUTION
+
+**Date:** February 15, 2026  
+**Status:** Issues Identified & Ready for Resolution  
+**Priority:** Critical for Production Deployment
+
+---
+
+## 📋 EXECUTIVE SUMMARY
+
+Two services have Docker build issues preventing containerization:
+1. **erp-ml (FastAPI)** - Poetry v2 cache conflict
+2. **erp-web (Next.js)** - Missing multi-stage build & duplicated commands
+
+Both issues are **fixable in < 3 hours** and **do not block Phase 1 development**.
+
+---
+
+## 🔴 IDENTIFIED ISSUES
+
+### **Issue #1: erp-ml Docker Build (Poetry v2 Cache)**
+
+**Location:** `erp-ml/Dockerfile`
+
+**Problem:**
+- Old Docker builder cache runs obsolete `poetry export` command (Poetry v1 syntax)
+- Poetry v2 doesn't support this command
+- Build fails on `docker build --cache-from` or incremental rebuilds
+- Blocks containerization of ML/OCR service
+
+**Root Cause:** Poetry v2 changed dependency export mechanism; old image layers cached v1 behavior
+
+**Current State:** Dockerfile is **correct** (uses PEP 517) but cached layers are stale
+
+**Resolution Steps:**
+
+```powershell
+# Step 1: Clear Docker builder cache completely
+docker builder prune -a
+
+# Step 2: Rebuild without using cached layers
+docker build --no-cache -t erp-ml:latest ./erp-ml
+
+# Step 3: Verify image runs
+docker run -p 8000:8000 erp-ml:latest
+
+# Step 4: Verify health check endpoint
+curl http://localhost:8000/health
+# Expected response: {"status": "ok"} or {"status": "healthy"}
+
+# Step 5: Push to registry (if using)
+docker push <registry>/erp-ml:latest
+
+# Step 6: Add to docker-compose for future builds
+# (See Issue #3 below)
+```
+
+**Verification:**
+```bash
+# Confirm image exists
+docker images | grep erp-ml
+
+# Check image size (should be < 2GB)
+docker image inspect erp-ml:latest --format='{{.Size}}' | numfmt --to=iec-i --suffix=B
+
+# Test in compose
+docker-compose up erp-ml
+```
+
+**Prevention:**
+- Run `docker builder prune -a` monthly in CI/CD
+- Add to CI/CD pipeline: `docker build --no-cache` flag
+- Document in README: "Clear cache before rebuilding erp-ml"
+
+---
+
+### **Issue #2: erp-web Dockerfile (Next.js Build & Duplicate Commands)**
+
+**Location:** `erp-web/Dockerfile`
+
+**Problem:**
+
+1. **Duplicate EXPOSE and HEALTHCHECK:**
+   - Lines 24-30 contain duplicate `EXPOSE 3000` and `HEALTHCHECK` blocks
+   - Docker uses last occurrence; duplicates cause confusion and mistakes
+
+2. **No Multi-Stage Build:**
+   - Assumes `.next` and `node_modules` are pre-built locally
+   - Cannot build from source inside container
+   - Requires manual `npm run build` before `docker build`
+   - Breaks automated CI/CD pipelines
+
+3. **Missing Builder Stage:**
+   - No `npm ci && npm run build` in Dockerfile
+   - Size bloat from node_modules included in final image
+   - No optimization for production
+
+**Current Dockerfile Issues:**
+```dockerfile
+# ❌ PROBLEM: Duplicate commands
+EXPOSE 3000              # Line 20
+...
+EXPOSE 3000              # Line 25 - DUPLICATE
+HEALTHCHECK ...          # Line 27
+CMD ["npm", "start"]     # Line 30
+
+EXPOSE 3000              # Line 31 - ANOTHER DUPLICATE!
+HEALTHCHECK ...          # Line 33 - ANOTHER DUPLICATE!
+CMD ["npm", "start"]     # Line 36
+```
+
+**Resolution:** Implement proper multi-stage build
+
+**Updated Dockerfile:**
+
+```dockerfile
+# syntax=docker/dockerfile:1.4
+# Stage 1: Builder - Compile Next.js application
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Copy only dependency manifests for layer caching
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install dependencies
+RUN npm ci --only=production && \
+    npm ci --only=dev
+
+# Copy application source
+COPY src ./src
+COPY public ./public
+COPY next.config.ts ./
+
+# Build Next.js application
+RUN npm run build
+
+# Stage 2: Runtime - Minimal production image
+FROM node:22-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Copy built artifacts from builder stage
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/public ./public
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+
+# Start Next.js server
+CMD ["npm", "start"]
+```
+
+**Build & Test:**
+
+```powershell
+# Step 1: Build from source (no pre-built artifacts needed)
+docker build -t erp-web:latest ./erp-web
+
+# Step 2: Verify image created and check size
+docker images | grep erp-web
+# Output should show image with smaller size (< 500MB)
+
+# Step 3: Run container
+docker run -p 3000:3000 erp-web:latest
+
+# Step 4: Test health check
+curl http://localhost:3000
+
+# Step 5: Verify Next.js app loads
+# Open browser: http://localhost:3000
+# Should see login page and no errors
+
+# Step 6: Check container logs
+docker logs <container_id>
+```
+
+**Verification Checklist:**
+- [ ] Image builds without errors
+- [ ] Image size < 500MB (vs pre-cache) 
+- [ ] Container starts successfully
+- [ ] Health check passes
+- [ ] App responds to requests on port 3000
+- [ ] No duplicate EXPOSE/HEALTHCHECK warnings
+
+---
+
+### **Issue #3: erp-api & erp-ml Not in docker-compose.yml**
+
+**Location:** `docker-compose.yml`
+
+**Problem:**
+- NestJS (`erp-api`) service is missing from docker-compose
+- FastAPI (`erp-ml`) service is missing from docker-compose
+- "Full stack" requires starting services manually outside Compose
+- Breaks `docker-compose up` as one-command deployment
+
+**Current Services in Compose:**
+```yaml
+services:
+  postgres:    ✅
+  keycloak:    ✅
+  keydb:       ✅
+  minio:       ✅
+  spring-boot: ✅
+  # ❌ MISSING: erp-api (NestJS)
+  # ❌ MISSING: erp-ml (FastAPI)
+```
+
+**Resolution:** Add missing services to docker-compose.yml
+
+**Add to docker-compose.yml (after spring-boot service):**
+
+```yaml
+  # ==================== NestJS API ====================
+  erp-api:
+    image: erp-api:latest
+    container_name: erp-api
+    environment:
+      APP_PORT: 3002
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/erp
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: erp
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-prod}
+      REDIS_HOST: keydb
+      REDIS_PORT: 6379
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: erp
+      KEYCLOAK_CLIENT_ID: erp-api
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-change-in-prod}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: erp-documents
+      SEARCH_ENGINE_URL: http://meilisearch:7700
+      ML_SERVICE_URL: http://erp-ml:8000
+      NODE_ENV: development
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keydb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==================== FastAPI ML Service ====================
+  erp-ml:
+    image: erp-ml:latest
+    container_name: erp-ml
+    environment:
+      API_PORT: 8000
+      PYTHONUNBUFFERED: 1
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/erp
+      REDIS_HOST: keydb
+      REDIS_PORT: 6379
+      LOG_LEVEL: info
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keydb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==================== Next.js Web Frontend ====================
+  erp-web:
+    image: erp-web:latest
+    container_name: erp-web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3002
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - erp-api
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+```
+
+**Build All Services:**
+
+```powershell
+# Step 1: Build erp-api image
+cd erp-api
+npm run build
+docker build -t erp-api:latest .
+cd ..
+
+# Step 2: Build erp-ml image
+cd erp-ml
+docker build --no-cache -t erp-ml:latest .
+cd ..
+
+# Step 3: Build erp-web image
+cd erp-web
+docker build -t erp-web:latest .
+cd ..
+
+# Step 4: Start entire stack
+docker-compose up -d
+
+# Step 5: Wait for services to be healthy (30-60 seconds)
+docker-compose ps
+# Should show all containers with health status "healthy"
+
+# Step 6: Verify all endpoints
+curl http://localhost:3000          # Next.js frontend
+curl http://localhost:3002/health   # NestJS API
+curl http://localhost:8000/health   # FastAPI ML
+curl http://localhost:8085/api/v1/health  # Spring Boot
+
+# Step 7: Check logs
+docker-compose logs -f
+```
+
+**Verification:**
+```powershell
+# Verify all services are running
+docker-compose ps
+# Output should show all 8 services as "Up"
+
+# Check network connectivity
+docker network inspect dream_erp-network
+# All services should be visible in connected containers
+
+# Test inter-service communication
+docker-compose exec erp-api curl http://postgres:5432
+docker-compose exec erp-ml curl http://keydb:6379
+```
+
+---
+
+### **Issue #4: Spring Boot Redis Environment Variables**
+
+**Location:** `docker-compose.yml` (spring-boot service)
+
+**Problem:**
+- Compose sets `KEYDB_HOST` and `KEYDB_PORT` environment variables
+- Spring Boot reads `SPRING_REDIS_HOST` and `SPRING_REDIS_PORT` (different names)
+- Variables are ignored; Spring Boot connects to wrong Redis instance
+- Custom variable names like `KEYDB_*` are not Spring Boot conventions
+
+**Current (Wrong):**
+```yaml
+spring-boot:
+  environment:
+    KEYDB_HOST: keydb
+    KEYDB_PORT: 6379
+```
+
+**Correct:**
+```yaml
+spring-boot:
+  environment:
+    SPRING_REDIS_HOST: keydb
+    SPRING_REDIS_PORT: 6379
+    SPRING_REDIS_DATABASE: 0
+    SPRING_REDIS_TIMEOUT: 60000
+```
+
+**Update in docker-compose.yml:**
+
+Find the spring-boot service and update environment variables:
+
+```yaml
+  spring-boot:
+    image: erp-accounting:latest
+    container_name: erp-spring-boot
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/erp
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_REDIS_HOST: keydb           # ← Changed from KEYDB_HOST
+      SPRING_REDIS_PORT: 6379            # ← Changed from KEYDB_PORT
+      SPRING_REDIS_DATABASE: 0
+      SPRING_REDIS_TIMEOUT: 60000
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_JPA_SHOW_SQL: false
+      LOGGING_LEVEL_ROOT: INFO
+```
+
+**Verification:**
+```powershell
+# Check Spring Boot logs for Redis connection
+docker-compose logs spring-boot | grep -i redis
+
+# Should show:
+# "Redis connection initialized"
+# OR "Connecting to Redis at keydb:6379"
+# NOT "Connection refused" or "Unknown host"
+
+# Test Redis connectivity from Spring Boot container
+docker-compose exec spring-boot redis-cli -h keydb ping
+# Should respond with "PONG"
+```
+
+---
+
+## ✅ RESOLUTION CHECKLIST
+
+### **Phase 1: Fix erp-web Dockerfile (30 minutes)**
+
+- [ ] Open `erp-web/Dockerfile`
+- [ ] Replace entire file with multi-stage build version
+- [ ] Remove duplicate EXPOSE and HEALTHCHECK blocks
+- [ ] Test: `docker build -t erp-web:latest ./erp-web`
+- [ ] Verify: `docker run -p 3000:3000 erp-web:latest`
+- [ ] Confirm: App loads at http://localhost:3000
+
+### **Phase 2: Fix erp-ml Docker Cache (15 minutes)**
+
+- [ ] Run: `docker builder prune -a`
+- [ ] Build: `docker build --no-cache -t erp-ml:latest ./erp-ml`
+- [ ] Test: `docker run -p 8000:8000 erp-ml:latest`
+- [ ] Verify: `curl http://localhost:8000/health`
+
+### **Phase 3: Update docker-compose.yml (1 hour)**
+
+- [ ] Add erp-api service configuration
+- [ ] Add erp-ml service configuration
+- [ ] Add erp-web service configuration
+- [ ] Update spring-boot Redis env vars (`SPRING_REDIS_*`)
+- [ ] Test: `docker-compose up -d`
+- [ ] Verify: All 8 containers healthy
+- [ ] Check: All service health endpoints respond
+
+### **Phase 4: Build All Images (1.5 hours)**
+
+- [ ] `cd erp-api && npm run build && docker build -t erp-api:latest .`
+- [ ] `cd erp-ml && docker build --no-cache -t erp-ml:latest .`
+- [ ] `cd erp-web && docker build -t erp-web:latest .`
+- [ ] `cd erp-accounting && docker build -t erp-accounting:latest .`
+
+### **Phase 5: Full Stack Test (30 minutes)**
+
+- [ ] `docker-compose up -d`
+- [ ] Wait 60 seconds for all services to initialize
+- [ ] `docker-compose ps` → All "Up" and "healthy"
+- [ ] Test endpoints:
+  - [ ] POST http://localhost:3002/auth/login
+  - [ ] GET http://localhost:3002/products
+  - [ ] GET http://localhost:3000 (frontend loads)
+  - [ ] POST http://localhost:8000/predict
+  - [ ] GET http://localhost:8085/api/v1/health
+
+### **Phase 6: Documentation (30 minutes)**
+
+- [ ] Update README.md: "Quick Start with Docker Compose"
+- [ ] Document environment variables in `.env.example`
+- [ ] Add troubleshooting section: "Docker Issues & Solutions"
+- [ ] Create CI/CD pipeline config for automated builds
+
+---
+
+## 🧪 TESTING PROCEDURES
+
+### **Test 1: Individual Service Health Checks**
+
+```powershell
+# After docker-compose up
+$services = @("postgres", "keydb", "minio", "keycloak", "spring-boot", "erp-api", "erp-ml", "erp-web")
+
+foreach ($service in $services) {
+    $status = docker-compose ps $service | grep -i "up"
+    if ($status) {
+        Write-Host "✅ $service is running" -ForegroundColor Green
+    } else {
+        Write-Host "❌ $service is NOT running" -ForegroundColor Red
+    }
+}
+```
+
+### **Test 2: Network Connectivity**
+
+```powershell
+# Test inter-container DNS resolution
+docker-compose exec erp-api nslookup postgres
+docker-compose exec erp-ml nslookup keydb
+docker-compose exec erp-web nslookup erp-api
+
+# All should resolve successfully
+```
+
+### **Test 3: API Gateway Routing**
+
+```powershell
+# Test each service endpoint
+$endpoints = @(
+    "http://localhost:3000",           # Frontend
+    "http://localhost:3002/health",    # NestJS API
+    "http://localhost:8000/health",    # FastAPI ML
+    "http://localhost:8085/api/v1/health",  # Spring Boot
+    "http://localhost:8082",            # Keycloak
+    "http://localhost:9000",            # MinIO
+    "http://localhost:7700"             # Meilisearch
+)
+
+foreach ($url in $endpoints) {
+    try {
+        $response = Invoke-WebRequest -Uri $url -ErrorAction Stop
+        Write-Host "✅ $url responded with status $($response.StatusCode)" -ForegroundColor Green
+    } catch {
+        Write-Host "❌ $url failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+```
+
+### **Test 4: Database & Cache**
+
+```powershell
+# Test PostgreSQL
+docker-compose exec postgres psql -U postgres -d erp -c "SELECT version();"
+
+# Test KeyDB/Redis
+docker-compose exec keydb redis-cli ping
+
+# Test MinIO
+docker-compose exec minio mc ls minio/
+
+# All should respond without errors
+```
+
+### **Test 5: Load Test**
+
+```powershell
+# Simple load test with curl (install from k6 if needed)
+# Or use LoadRunner/JMeter for enterprise-grade testing
+
+# 100 requests to frontend
+for ($i = 1; $i -le 100; $i++) {
+    curl -s http://localhost:3000 > $null
+    Write-Progress -Activity "Loading" -PercentComplete ($i) -Status "$i/100"
+}
+Write-Host "✅ Load test complete" -ForegroundColor Green
+```
+
+---
+
+## 📊 TIMELINE SUMMARY
+
+| Phase | Task | Time | Owner |
+|-------|------|------|-------|
+| **1** | Fix erp-web Dockerfile | 30 min | Dev |
+| **2** | Clear erp-ml Docker cache | 15 min | Dev |
+| **3** | Update docker-compose.yml | 1 hr | DevOps |
+| **4** | Build all images | 1.5 hr | CI/CD |
+| **5** | Full stack test | 30 min | QA |
+| **6** | Documentation | 30 min | Tech Writer |
+| **TOTAL** | — | **~4 hours** | Team |
+
+---
+
+## 🔐 SECURITY CHECKLIST
+
+After Docker issues are fixed, **before production**:
+
+- [ ] Change all default passwords (Keycloak admin, MinIO, etc.)
+- [ ] Set strong JWT_SECRET (replace "your-secret-key-change-in-prod")
+- [ ] Use environment-specific `.env` files (dev, staging, prod)
+- [ ] Configure HTTPS/TLS certificates
+- [ ] Set resource limits on containers (memory, CPU)
+- [ ] Enable container security scanning (Trivy, Anchor)
+- [ ] Implement network policies (isolate sensitive services)
+- [ ] Enable audit logging for all containers
+- [ ] Regularly update base images (node:22-alpine, python:3.11-slim, etc.)
+
+---
+
+## 📞 TROUBLESHOOTING
+
+### **erp-ml Docker Build Fails**
+```powershell
+# Clear everything and retry
+docker builder prune -a
+docker system prune -a
+docker build --no-cache --progress=plain -t erp-ml:latest ./erp-ml
+# Check output for specific error messages
+```
+
+### **erp-web Health Check Failing**
+```powershell
+# Check if server is actually listening
+docker-compose logs erp-web | tail -20
+
+# Manually test health endpoint
+docker-compose exec erp-web curl -v http://localhost:3000
+```
+
+### **Services Can't Connect to Database**
+```powershell
+# Verify PostgreSQL is healthy
+docker-compose ps postgres
+docker-compose logs postgres | tail -50
+
+# Check network connectivity
+docker-compose exec erp-api ping postgres
+# If fails: check docker-compose.yml network configuration
+```
+
+### **Port Already in Use**
+```powershell
+# Change port in docker-compose.yml
+# Example: Change 3000:3000 to 3001:3000
+# Then access frontend at http://localhost:3001
+```
+
+### **Out of Memory/Disk Space**
+```powershell
+# Clean up dangling images and containers
+docker system prune -a --volumes
+
+# Check disk usage
+docker system df
+```
+
+---
+
+## 📌 KEY TAKEAWAYS
+
+1. **erp-ml Issue:** Cache problem only → `docker builder prune -a` + `--no-cache` flag
+2. **erp-web Issue:** Needs multi-stage build → Replace Dockerfile
+3. **Missing Services:** Add erp-api, erp-ml, erp-web to docker-compose
+4. **Redis Connection:** Use `SPRING_REDIS_*` not `KEYDB_*`
+5. **Total Fix Time:** ~4 hours for complete resolution
+6. **Blocks Production:** YES - Cannot deploy without Docker
+7. **Blocks Development:** NO - Can proceed locally without containers
+
+---
+
+**Status:** Ready to implement  
+**Next Step:** Execute Phase 1 (Fix erp-web Dockerfile)  
+**Target Completion:** February 16, 2026 (1 day)

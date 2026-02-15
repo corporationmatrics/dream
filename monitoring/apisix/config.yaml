@@ -1,0 +1,176 @@
+# Apache APISIX Configuration - API Gateway for Phase 1B
+# Routes: FastAPI (B2B/ML) → Port 8050
+#         Spring Boot (Financial) → Port 8085
+#         EDI Protocol → Port 8050
+
+apisix:
+  node_listen: 9080
+  enable_ipv6: false
+  enable_admin: true
+  admin_listen:
+    ip: 0.0.0.0
+    port: 9180
+  show_upstream_status_in_response_header: true
+
+# Authentication plugin configuration
+plugins:
+  - cors
+  - jwt-auth
+  - key-auth
+  - rate-limiting
+  - proxy-rewrite
+  - response-rewrite
+
+# Admin API security key
+admin_key:
+  - name: admin
+    key: edd1c9f034335f136f87ad84b625c8f1
+    role: admin
+
+# Upstream definitions
+upstream:
+  # FastAPI B2B/ML Services
+  fastapi_upstream:
+    type: roundrobin
+    nodes:
+      - host: fastapi
+        port: 8000
+        weight: 10
+    timeout:
+      connect: 5000
+      read: 5000
+      send: 5000
+    keepalive_requests: 100
+
+  # Spring Boot Financial Core
+  springboot_upstream:
+    type: roundrobin
+    nodes:
+      - host: spring-boot
+        port: 8085
+        weight: 10
+    timeout:
+      connect: 5000
+      read: 5000
+      send: 5000
+    keepalive_requests: 100
+
+  # EDI Protocol Layer (B2B Document Exchange)
+  edi_upstream:
+    type: roundrobin
+    nodes:
+      - host: edi-protocol
+        port: 8050
+        weight: 10
+    timeout:
+      connect: 5000
+      read: 5000
+      send: 5000
+    keepalive_requests: 100
+
+# Route definitions
+routes:
+  # Health check endpoint
+  - id: health
+    uri: /health
+    upstream_id: fastapi_upstream
+    methods:
+      - GET
+
+  # B2B API Routes (FastAPI) - Order Processing
+  - id: b2b_api
+    uri: /api/b2b/*
+    upstream_id: fastapi_upstream
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    plugins:
+      cors:
+        allow_origins: "*"
+        allow_methods: "*"
+        allow_headers: "*"
+      rate-limiting:
+        rate_limit:
+          - 100/min
+          - 1000/hour
+
+  # OCR & ML Services (FastAPI)
+  - id: ocr_service
+    uri: /api/ocr/*
+    upstream_id: fastapi_upstream
+    methods:
+      - POST
+      - GET
+    plugins:
+      cors:
+        allow_origins: "*"
+        allow_headers: "*"
+
+  # Financial Core Routes (Spring Boot) - Requires JWT
+  - id: financial_api
+    uri: /api/financial/*
+    upstream_id: springboot_upstream
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    plugins:
+      jwt-auth:
+        header: Authorization
+        query: access_token
+      rate-limiting:
+        rate_limit:
+          - 50/min
+          - 500/hour
+
+  # EDI Protocol Routes (B2B Document Exchange) - Phase 1B
+  - id: edi_protocol
+    uri: /api/edi/*
+    upstream_id: edi_upstream
+    methods:
+      - POST
+      - GET
+      - PUT
+    plugins:
+      cors:
+        allow_origins: "*"
+        allow_headers: "*"
+      rate-limiting:
+        rate_limit:
+          - 200/min
+          - 2000/hour
+
+  # Products endpoint (FastAPI)
+  - id: products_api
+    uri: /api/products/*
+    upstream_id: fastapi_upstream
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+
+  # Orders endpoint (Spring Boot Financial)
+  - id: orders_api
+    uri: /api/orders/*
+    upstream_id: springboot_upstream
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    plugins:
+      jwt-auth:
+        header: Authorization
+
+# Global plugins configuration
+plugin_attr:
+  rate-limiting:
+    redis_host: valkey
+    redis_port: 6379
+    redis_password: ""
+    policy: local
+    fault_tolerance: true

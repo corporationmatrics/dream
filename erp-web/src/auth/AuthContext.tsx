@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { authAPI } from '@/lib/api';
 
 interface User {
   id: string;
@@ -54,20 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     
     try {
-      const response = await fetch('http://localhost:3002/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Login failed');
-      }
-
-      const data = await response.json();
+      const response = await authAPI.login({ email, password });
+      const data = response.data as any;
       
       // Extract user info from response
       const userData: User = {
@@ -84,7 +73,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('user', JSON.stringify(userData));
       setUser(userData);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Login failed';
+      const errorMessage = 
+        (err as any)?.response?.data?.message || 
+        (err instanceof Error ? err.message : 'Login failed');
       setError(errorMessage);
       throw err;
     } finally {
@@ -97,26 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:3002/auth/register', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password, name }),
-      });
-
-      if (!response.ok) {
-        let errorMessage = 'Registration failed';
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.message || errorData.error || `Server error: ${response.status}`;
-        } catch {
-          errorMessage = `Server error: ${response.status} ${response.statusText}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data = await response.json();
+      const response = await authAPI.register({ email, password, name });
+      const data = response.data as any;
       
       // Validate response contains required fields
       if (!data.access_token || !data.user) {
@@ -139,7 +112,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('user', JSON.stringify(userData));
       setUser(userData);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Registration failed';
+      const errorMessage = 
+        (err as any)?.response?.data?.message || 
+        (err instanceof Error ? err.message : 'Registration failed');
       setError(errorMessage);
       console.error('Registration error:', errorMessage);
       throw err;

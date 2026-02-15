@@ -1,0 +1,151 @@
+# ERP Foundation Services - READY ✅
+
+## Status: All Foundation Services Running
+
+**Time Deployed:** 2026-02-15 11:53 IST
+
+### Service Status
+
+| Service | Container | Image | Port | Status | Health |
+|---------|-----------|-------|------|--------|--------|
+| PostgreSQL | erp-postgres | postgres:16-alpine | 5432 | ✅ Running | 🟢 Healthy |
+| KeyDB (Cache) | erp-keydb | eqalpha/keydb:latest | 6379 | ✅ Running | 🟢 Healthy |
+| MinIO (Storage) | erp-minio | minio/minio:latest | 9000-9001 | ✅ Running | 🟢 Healthy |
+| Keycloak (Auth) | erp-keycloak | keycloak:23.0.7 | 8082 | ✅ Running | ⚠️ Unhealthy* |
+
+**Note:** Keycloak health check endpoint (`/health/live`) is not available in dev mode, but the service is fully operational and accessible at `http://localhost:8082`.
+
+---
+
+## ✅ What's Ready
+
+- **Database**: PostgreSQL is initialized with all 9 migration tables
+- **Cache**: KeyDB is running and ready for sessions
+- **Storage**: MinIO is running with buckets ready
+- **Auth**: Keycloak is operational on port 8082
+  - Admin URL: `http://localhost:8082/admin`
+  - Default credentials: `admin` / `admin123`
+
+---
+
+## 🚀 Next Steps: Start Microservices
+
+### Terminal 1: Backend API (NestJS)
+```powershell
+cd "D:\UPENDRA\e-HA Matrix\Dream\erp-api"
+npm install
+npm run start:dev
+```
+Expected: "Application is running on: http://localhost:3002"
+
+### Terminal 2: Frontend (Next.js)
+```powershell
+cd "D:\UPENDRA\e-HA Matrix\Dream\erp-web"
+npm install
+npm run dev
+```
+Expected: "Ready on http://localhost:3000"
+
+### Terminal 3: ML Service (FastAPI - Optional)
+```powershell
+cd "D:\UPENDRA\e-HA Matrix\Dream\erp-ml"
+poetry install
+poetry run python main.py
+```
+Expected: "Uvicorn running on http://0.0.0.0:8000"
+
+### Terminal 4: Accounting (Spring Boot - Optional)
+```powershell
+cd "D:\UPENDRA\e-HA Matrix\Dream\erp-accounting"
+mvn spring-boot:run
+```
+Expected: "Started Application in X seconds"
+
+---
+
+## 📋 Service URLs
+
+### Foundation Services
+- **Database**: `postgresql://postgres:postgres@localhost:5432/erp`
+- **Cache**: `redis://localhost:6379`
+- **Storage**: `http://localhost:9000` (MinIO)
+- **Auth**: `http://localhost:8082` (Keycloak)
+
+### Application Services (after startup)
+- **Frontend**: `http://localhost:3000`
+- **Backend API**: `http://localhost:3002`
+- **ML Service**: `http://localhost:8000` (optional)
+- **Accounting**: `http://localhost:8085` (optional)
+
+---
+
+## 🔧 Useful Commands
+
+```powershell
+# Check all services
+docker-compose ps
+
+# View logs
+docker-compose logs -f               # All services
+docker-compose logs postgres         # Specific service
+docker-compose logs --tail=20 keycloak
+
+# Stop foundation (keeps data)
+docker-compose stop
+
+# Fully clean up (removes volumes/data)
+docker-compose down -v
+
+# View network
+docker network ls
+docker network inspect erp-network
+```
+
+---
+
+## ⚙️ Configuration Notes
+
+- **Database Name**: `erp` (not `erp_platform`)
+- **Postgres User**: `postgres`
+- **Postgres Password**: `postgres`
+- **JWT Secret**: Set in `erp-api/.env` (auto-created from `.env.example` with fallback)
+- **API Port**: 3002
+- **Web Port**: 3000
+- **ML Port**: 8000
+- **Accounting Port**: 8085
+
+---
+
+## 🐛 Troubleshooting
+
+### Keycloak Unhealthy
+The health check fails in dev mode, but Keycloak is operational:
+```powershell
+# Test manually
+curl http://localhost:8082/
+```
+
+### Port Already in Use
+If a port is already bound:
+```powershell
+# Find what's using port 3002
+Get-NetTCPConnection -LocalPort 3002 | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Get-Process -Id $_ }
+
+# Kill the process (replace PID)
+Stop-Process -Id <PID> -Force
+```
+
+### Database Connection Refused
+If services can't connect to postgres:
+1. Verify postgres is healthy: `docker-compose ps`
+2. Check postgres logs: `docker-compose logs postgres`
+3. Wait 5-10 seconds for initialization
+4. Restart: `docker-compose restart postgres`
+
+---
+
+## ✨ You're Ready to Build!
+
+The foundation is set. Open `http://localhost:3000` once microservices are running.
+
+Good luck with development! 🎉

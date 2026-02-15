@@ -1,0 +1,557 @@
+================================================================================
+        ERP PLATFORM - ARCHITECTURE & SETUP DETAILS
+        February 15, 2026
+================================================================================
+
+PROJECT VISION & GOALS
+================================================================================
+Enterprise ERP & Supply Chain Platform for India's retail ecosystem (kiranas, 
+distributors, suppliers). Designed as loosely-coupled microservices that can 
+scale independently.
+
+Key Architecture Goals:
+- Microservices independence (each service deployable separately)
+- HTTP-based integration (services communicate via REST APIs)
+- Enterprise infrastructure (PostgreSQL, caching, security, monitoring)
+- Multi-phase development (Phase 1: Core MVP, Phase 2: B2B/ML, Phase 3: Enterprise)
+
+================================================================================
+MICROSERVICES ARCHITECTURE
+================================================================================
+
+Four Independent Microservices (can be deployed/scaled separately):
+
+1. ERP-API (NestJS - Port 3002)
+   - Core business logic backend
+   - User authentication & authorization
+   - Product catalog management  
+   - Order processing
+   - API Gateway for other services
+   - Dependencies: PostgreSQL, KeyDB, Keycloak
+
+2. ERP-WEB (Next.js - Port 3000)
+   - Frontend web application
+   - React 19 + Next.js 16
+   - shadcn/ui components
+   - Responsive design
+   - Dependencies: erp-api (via HTTP)
+
+3. ERP-ML (FastAPI - Port 8000)
+   - Machine Learning services
+   - OCR for invoice/document parsing (PaddleOCR-VL)
+   - Fraud detection
+   - Demand forecasting
+   - Customer segmentation
+   - Python 3.11
+   - Dependencies: PostgreSQL, Redis
+
+4. ERP-ACCOUNTING (Spring Boot - Port 8085)
+   - Financial ledger & General Ledger (GL) entries
+   - Invoice management
+   - Chart of Accounts (CoA)
+   - Double-entry accounting
+   - Java 21
+   - Dependencies: PostgreSQL, KeyDB, Keycloak
+
+================================================================================
+FOUNDATION SERVICES (Shared Infrastructure)
+================================================================================
+
+Services that support ALL microservices (containerized):
+
+1. PostgreSQL (Port 5432)
+   - Main relational database
+   - Stores: users, products, orders, GL accounts, invoices
+   - Version: 16-alpine
+   - Init scripts: ./erp-database/migrations/*.sql
+
+2. KeyDB (Port 6379)
+   - Redis-compatible cache & session store
+   - Real-time state, caching, message brokering
+   - Version: latest
+
+3. MinIO (Port 9000/9001)
+   - S3-compatible object storage
+   - Document storage, invoice images
+   - Console on port 9001
+   - Credentials: minioadmin / minioadmin123
+
+4. Keycloak (Port 8082)
+   - Identity & Access Management (OAuth2/OIDC)
+   - User federation
+   - Two-factor authentication
+   - Version: 23.0.7
+   - Console: http://localhost:8082
+   - Credentials: admin / admin123
+
+================================================================================
+ENVIRONMENT CONFIGURATION
+================================================================================
+
+ERR-API (.env.example)
+-----------------------
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USER=postgres
+DATABASE_PASSWORD=postgres
+DATABASE_NAME=erp
+
+JWT_SECRET=your-secret-key-here
+JWT_EXPIRATION=3600
+
+APP_PORT=3002
+NODE_ENV=development
+
+API_PREFIX=api
+API_VERSION=v1
+
+ERP-ML (.env.example)
+---------------------
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/erp_platform
+API_PORT=8000
+API_HOST=0.0.0.0
+ENVIRONMENT=development
+DEBUG=true
+
+INFRASTRUCTURE (.env.example)
+-----------------------------
+DATABASE_HOST=postgres
+DATABASE_PORT=5432
+DATABASE_USER=postgres
+DATABASE_PASSWORD=postgres
+DATABASE_NAME=erp_platform
+
+KEYDB_HOST=keydb
+KEYDB_PORT=6379
+
+MINIO_HOST=minio
+MINIO_PORT=9000
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
+
+MEILISEARCH_HOST=meilisearch
+MEILISEARCH_PORT=7700
+
+KUBERNETES_CONTEXT=erp-platform
+
+================================================================================
+MICROSERVICE STARTUP CONFIGURATIONS
+================================================================================
+
+ERP-API (NestJS)
+----------------
+File: erp-api/src/main.ts
+
+const app = await NestFactory.create(AppModule);
+
+app.useGlobalPipes(new ValidationPipe({
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  transform: true,
+}));
+
+app.enableCors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true,
+});
+
+const port = process.env.APP_PORT || 3000;
+await app.listen(port);
+
+Start Script: npm run start:dev (watch mode) or npm run start:prod
+Dependencies: @nestjs/core, typeorm, postgresql, jwt, passport, bcrypt
+
+ERP-WEB (Next.js)
+-----------------
+File: erp-web/next.config.ts
+Minimal configuration - uses defaults
+
+Start Script: npm run dev (development) or npm start (production)
+Dependencies: next, react, typescript, tailwindcss, shadcn/ui
+
+Note: Expects .next and node_modules to exist
+Docker build assumes pre-built files via: npm run build
+
+ERP-ML (FastAPI)
+----------------
+File: erp-ml/erp_ml/main.py
+
+from fastapi import FastAPI
+import uvicorn
+
+app = FastAPI(
+    title="ERP ML Services",
+    description="Machine Learning models for ERP Platform",
+    version="1.0.0",
+)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "ocr_enabled": ocr_service.reader is not None}
+
+@app.post("/ocr/invoice")
+async def extract_invoice(file: UploadFile = File(...)):
+    # OCR processing
+
+Start Script: poetry install && poetry run python main.py
+Dependencies: fastapi, uvicorn, paddleocr, paddlepaddle, scikit-learn, 
+             numpy, pandas, sqlalchemy, psycopg2, redis, pymongo
+
+ERP-ACCOUNTING (Spring Boot)
+----------------------------
+File: erp-accounting/pom.xml
+
+Parent: spring-boot-starter-parent 3.2.0
+Java Version: 21
+
+Dependencies: 
+- spring-boot-starter-web (REST API)
+- spring-boot-starter-data-jpa (database)
+- spring-boot-starter-security (auth)
+- postgresql driver
+- lombok, validation
+
+Start Script: mvn spring-boot:run or java -jar target/accounting-1.0.0.jar
+Health Check: GET /api/v1/health
+
+================================================================================
+DOCKER CONFIGURATION
+================================================================================
+
+LOCAL DEVELOPMENT (docker-compose.yml)
+--------------------------------------
+Foundation services ONLY (4 containers):
+- postgres (port 5432)
+- keycloak (port 8082)
+- keydb (port 6379)
+- minio (port 9000/9001)
+
+Microservices run LOCALLY (NOT in Docker):
+- erp-api: npm run start:dev (port 3002)
+- erp-web: npm run dev (port 3000)  
+- erp-ml: poetry run python main.py (port 8000)
+- erp-accounting: mvn spring-boot:run (port 8085)
+
+Rationale:
+- Fast iteration: Local services reload instantly
+- Independent scaling: Each team works on their service
+- Reduced build time: No rebuilding 1.5GB ML images during dev
+- Enterprise-ready: Mimics production deployment patterns
+
+PRODUCTION (docker-compose.production.yml)
+-------------------------------------------
+ALL 8 services containerized:
+- Foundation layer (4 services) + Microservices layer (4 services)
+- Pre-built images required:
+  * docker build -t erp-accounting:latest ./erp-accounting
+  * docker build -t erp-api:latest ./erp-api
+  * docker build -t erp-ml:latest ./erp-ml
+  * docker build -t erp-web:latest ./erp-web
+
+Usage: docker-compose -f docker-compose.production.yml up -d
+
+================================================================================
+DOCKERFILE SPECIFICATIONS
+================================================================================
+
+ERP-ACCOUNTING (Spring Boot)
+----------------------------
+Multi-stage build:
+- Builder: maven:3.9-eclipse-temurin-21
+  * Builds JAR with: mvn clean package
+  * Result: target/*.jar
+  
+- Runtime: eclipse-temurin:21-jre-alpine
+  * Minimal Alpine JRE
+  * JVM Options: -Xms512m -Xmx1024m -XX:+UseG1GC
+  * Healthcheck: curl http://localhost:8085/api/v1/health
+  * Port: 8085
+
+ERP-API (NestJS)
+----------------
+Multi-stage build:
+- Builder: node:20-alpine
+  * npm install + npm run build
+  * Result: dist/ directory
+  
+- Runtime: node:20-alpine
+  * Production dependencies only
+  * Node env: production
+  * Healthcheck: curl http://localhost:3002/health
+  * Port: 3002
+
+ERP-WEB (Next.js)
+-----------------
+Single-stage build:
+- Base: node:22-alpine
+- Expects PRE-BUILT files:
+  * .next/ (built via npm run build)
+  * node_modules/ (from npm install)
+  * public/ (assets)
+- Healthcheck: Node HTTP call to port 3000
+- Port: 3000
+
+IMPORTANT: Dockerfile assumes npm run build already executed locally
+
+ERP-ML (FastAPI)
+----------------
+Single-stage build:
+- Base: python:3.11-slim
+- System dependencies: libgomp1, libgl1, opencv libs, build-essential
+- Install: pip install . (using pyproject.toml with poetry-core backend)
+- Healthcheck: curl http://localhost:8000/health
+- Port: 8000
+- Startup: python -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+Build time: 5-10 minutes (first build with ML dependencies)
+           Seconds (subsequent builds with cache)
+
+================================================================================
+DATABASE SCHEMA (PostgreSQL)
+================================================================================
+
+CORE TABLES:
+
+1. users
+   - id (UUID, PK)
+   - email (VARCHAR, UNIQUE)
+   - name, password, role
+   - is_active, created_at, updated_at
+   - Index: idx_users_email
+
+2. products
+   - id (UUID, PK)
+   - name, description, sku (UNIQUE), price, stock, category
+   - status (active/inactive), created_at, updated_at
+   - Index: idx_products_sku
+
+3. orders
+   - id (UUID, PK)
+   - order_number (UNIQUE)
+   - user_id (FK → users)
+   - subtotal, discount, tax_amount, total_amount
+   - status (pending/confirmed/shipped/delivered)
+   - created_at, updated_at
+   - Indexes: idx_orders_user_id, idx_orders_status
+
+4. order_items
+   - id (UUID, PK)
+   - order_id (FK → orders)
+   - product_id (FK → products)
+   - quantity, unit_price
+   - Indexes: idx_order_items_order_id, idx_order_items_product_id
+
+ACCOUNTING TABLES:
+
+5. gl_accounts
+   - id (UUID, PK)
+   - account_code (VARCHAR, UNIQUE), account_name
+   - account_type (Asset/Liability/Equity/Revenue/Expense)
+   - is_active, created_at, updated_at
+   - Index: idx_gl_accounts_code
+
+6. gl_entries
+   - id (UUID, PK)
+   - account_id (FK → gl_accounts)
+   - debit, credit (numeric amounts)
+   - description, reference_type, reference_id
+   - entry_date, created_at
+   - Indexes: idx_gl_entries_account_id, idx_gl_entries_date
+
+7. invoices
+   - id (UUID, PK)
+   - invoice_number (UNIQUE)
+   - order_id (FK → orders)
+   - amount, tax, total
+   - status (draft/issued/paid), issued_date, due_date
+   - Indexes: idx_invoices_number, idx_invoices_status
+
+================================================================================
+NPM START SCRIPTS
+================================================================================
+
+ERP-API (erp-api/package.json)
+-------
+npm run build        - Build TypeScript to dist/
+npm run start        - Run production build (node dist/main)
+npm run start:dev    - Development watch mode
+npm run start:debug  - Debug mode with source maps
+npm run lint         - ESLint with auto-fix
+npm run test         - Jest tests
+npm run test:cov     - Coverage reports
+
+ERP-WEB (erp-web/package.json)
+------
+npm run dev          - Development server (http://localhost:3000)
+npm run build        - Production build (.next/ directory)
+npm start            - Start production server
+npm run lint         - ESLint
+
+================================================================================
+POETRY MANAGEMENT (ERP-ML)
+================================================================================
+
+File: erp-ml/pyproject.toml
+
+Dependencies:
+- fastapi ^0.104.0, uvicorn ^0.24.0 (web framework)
+- numpy ^1.24.0, pandas ^2.1.0 (data processing)
+- scikit-learn ^1.3.0 (ML models)
+- paddleocr ^2.7.0.3, paddlepaddle ^2.5.0 (OCR - PRIMARY)
+- pillow ^10.0.0, opencv-python ^4.8.0 (image processing)
+- sqlalchemy ^2.0.0, psycopg2-binary ^2.9.0 (database)
+- redis ^5.0.0, pymongo ^4.6.0, pika ^1.3.0 (backends)
+- pydantic ^2.4.0, python-dotenv ^1.0.0 (config)
+
+Commands:
+poetry install       - Install all dependencies
+poetry add <pkg>     - Add new dependency
+poetry run python main.py  - Run FastAPI service
+
+Note: Uses Poetry v2 with PEP 517 backend (poetry-core)
+
+================================================================================
+MAVEN BUILD (ERP-ACCOUNTING)
+================================================================================
+
+File: erp-accounting/pom.xml
+
+Build:
+mvn clean compile   - Compile only
+mvn clean package   - Build JAR (target/accounting-1.0.0-SNAPSHOT.jar)
+mvn spring-boot:run - Run directly via Maven
+
+Java Version: 21
+Spring Boot: 3.2.0
+Output: JAR file in target/ directory
+
+================================================================================
+CRITICAL CONFIGURATION ISSUES & CURRENT STATUS
+================================================================================
+
+ISSUE #15: spring-boot service in docker-compose.yml
+-------
+Problem: docker-compose.yml tried to PULL erp-accounting:latest image 
+         (didn't exist → Docker pull access denied error)
+
+Status: FIXED
+- Commented out spring-boot service from docker-compose.yml
+- Now only pulls 4 foundation images (postgres, keycloak, keydb, minio)
+- Spring Boot runs locally via: mvn spring-boot:run
+
+ISSUE #16: PowerShell syntax errors in verification commands
+-------
+Problem: Documentation used && operator (bash syntax), not valid in PowerShell
+
+Status: FIXED
+- Updated all commands to use ; (semicolon) for PowerShell compatibility
+- Example: cd erp-api; npm install; npm run dev
+
+================================================================================
+CURRENT CONTAINER STATUS
+================================================================================
+
+Foundation Services Pull Status:
+- postgres:16-alpine (~110 MB) - DOWNLOADED
+- keycloak:23.0.7 (~260 MB) - DOWNLOADING
+- keydb:latest (~53 MB) - DOWNLOADING  
+- minio:latest (~62 MB) - DOWNLOADING
+
+Total Download Size: ~375 MB
+Estimated Time: 2-5 minutes (depends on internet speed)
+
+Once downloads complete:
+- Containers automatically extract and start
+- Health checks run
+- Services appear in: docker-compose ps
+
+Next Verification Step:
+1. Wait for all pulls to complete
+2. Run: docker-compose ps (should show 4 healthy services)
+3. Start dev services locally in separate terminals:
+   - Terminal 1: cd erp-api; npm install; npm run start:dev
+   - Terminal 2: cd erp-web; npm install; npm run dev
+   - Terminal 3: cd erp-ml; poetry install; poetry run python main.py
+
+================================================================================
+WHY THIS ARCHITECTURE?
+================================================================================
+
+SEPARATE DEVELOPMENT & PRODUCTION CONFIGS:
+
+LOCAL DEVELOPMENT (fast iteration):
+- docker-compose.yml: 4 foundation services only
+- Microservices: Run locally (npm run dev, poetry run, mvn spring-boot:run)
+- Rationale:
+  * Frontend dev doesn't wait for ML builds (1.5GB image)
+  * Backend dev works independently
+  * Instant reload/watch mode
+  * 5-minute setup vs 40-minute Docker setup
+
+PRODUCTION (stability & scalability):
+- docker-compose.production.yml: All 8 services containerized
+- Pre-built images required
+- Used for CI/CD, staging, production
+- Each service scales independently
+
+ENTERPRISE ALIGNMENT:
+✓ Microservices can deploy to different clusters
+✓ Teams work independently without blocking others
+✓ Foundation layer is reliable (database, cache, auth)
+✓ Each service has its own tech stack (Node, Python, Java)
+✓ Clear: "foundation in Docker, apps run where they're developed"
+
+================================================================================
+QUICK START CHECKLIST
+================================================================================
+
+1. Wait for docker-compose pull to complete (check: docker images)
+2. Verify containers: docker-compose ps (expect 4 healthy)
+3. Terminal 1 - API: 
+   cd erp-api
+   npm install
+   npm run start:dev
+   (should show: Running on http://localhost:3002)
+   
+4. Terminal 2 - Frontend:
+   cd erp-web
+   npm install  
+   npm run dev
+   (should show: Ready on http://localhost:3000)
+   
+5. Terminal 3 - ML:
+   cd erp-ml
+   poetry install
+   poetry run python main.py
+   (should show: Uvicorn running on http://0.0.0.0:8000)
+   
+6. Open browser: http://localhost:3000
+
+================================================================================
+FILE NOT FOUND - MISSING ITEMS
+================================================================================
+
+Not Present in Repository:
+- .dockerignore files (no files are excluded from Docker builds currently)
+- Makefile (no common commands wrapper)
+- CI/CD pipeline (.github/workflows or .gitlab-ci.yml - not configured yet)
+- Health endpoint in erp-web (Next.js frontend, tested via port response)
+
+These are planned for Phase B (Structure Cleanup) or Phase 3 (Enterprise)
+
+================================================================================
+KEY DOCUMENTATION FILES
+================================================================================
+
+1. DOCKER_FIXES_IMPLEMENTED.md - Phase A fixes (today's work)
+2. DOCKER_ISSUE_RESOLUTION.md - Initial issue analysis
+3. 1_PROJECT_OVERVIEW.md - Architecture overview
+4. 2_SETUP_AND_DEPLOYMENT.md - Complete setup guide
+5. 3_IMPLEMENTATION_GUIDE.md - Development workflow
+6. PHASE_2_DATABASE_SCHEMA_AND_ACCOUNTING_SERVICES.md - Phase 2 planning
+
+Each README in microservice folders provides service-specific details.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

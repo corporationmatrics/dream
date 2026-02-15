@@ -1,0 +1,171 @@
+# ============================================================================
+# DOCKER COMPOSE - LOCAL DEVELOPMENT (Foundation Services Only)
+# ============================================================================
+# 
+# This file starts ONLY the foundation services (database, cache, storage, auth)
+# 
+# For DEVELOPMENT, run these services locally (NOT in Docker):
+#   - erp-api (NestJS)     → cd erp-api && npm run dev
+#   - erp-ml (FastAPI)     → cd erp-ml && poetry run python main.py
+#   - erp-web (Next.js)    → cd erp-web && npm run dev
+#
+# For PRODUCTION / CI-CD / STAGING, use:
+#   docker-compose -f docker-compose.production.yml up -d
+#
+# Quick Start:
+#   1. docker-compose up -d          # Start foundation services
+#   2. cd erp-api && npm run dev     # In terminal 1
+#   3. cd erp-web && npm run dev     # In terminal 2
+#   4. cd erp-ml && poetry run python main.py  # In terminal 3
+#   5. Open http://localhost:3000
+#
+# ============================================================================
+
+version: '3.8'
+services:
+  # ==================== PostgreSQL ====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: erp-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: erp
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./erp-database/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Keycloak ====================
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.7
+    container_name: erp-keycloak
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
+      KC_DB: postgres
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/postgres
+      KC_DB_POOL_INITIAL_SIZE: "10"
+      KC_DB_POOL_MAX_SIZE: "20"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+      KC_HOSTNAME: localhost
+      KC_FEATURES: "scripts,token-exchange,dynamic-scopes"
+    command: ["start-dev"]
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ==================== KeyDB (Redis-compatible cache) ====================
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: erp-keydb
+    ports:
+      - "6379:6379"
+    volumes:
+      - keydb_data:/data
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== MinIO (File Storage) ====================
+  minio:
+    image: minio/minio:latest
+    container_name: erp-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - erp-network
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Spring Boot Accounting Service ====================
+  # For development: Run locally with 'cd erp-accounting && mvn spring-boot:run'
+  # This allows hot reload and faster iteration
+  # 
+  # For production/CI-CD: Use docker-compose.production.yml instead
+  # Uncomment the section below if you want to run it in Docker locally
+  
+  # spring-boot:
+  #   build:
+  #     context: ./erp-accounting
+  #     dockerfile: Dockerfile
+  #   container_name: erp-spring-boot
+  #   environment:
+  #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/erp
+  #     SPRING_DATASOURCE_USERNAME: postgres
+  #     SPRING_DATASOURCE_PASSWORD: postgres
+  #     SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+  #     SPRING_PROFILES_ACTIVE: production
+  #     SERVER_PORT: 8085
+  #     SPRING_REDIS_HOST: keydb
+  #     SPRING_REDIS_PORT: "6379"
+  #     KEYCLOAK_URL: http://keycloak:8080
+  #     KEYCLOAK_REALM: erp
+  #   ports:
+  #     - "8085:8085"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     keydb:
+  #       condition: service_healthy
+  #   networks:
+  #     - erp-network
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8085/api/v1/health"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 10
+
+  # ==================== DEVELOPMENT SERVICES (Run Locally, Not in Docker) ====================
+  # For development, run these services locally on your machine:
+  # 
+  # erp-api (NestJS):    cd erp-api && npm run dev          (runs on port 3002)
+  # erp-ml (FastAPI):    cd erp-ml && poetry run python main.py  (runs on port 8000)
+  # erp-web (Next.js):   cd erp-web && npm run dev          (runs on port 3000)
+  #
+  # These are NOT containerized in development to allow fast iteration.
+  # docker-compose.production.yml contains containerized versions for CI/CD & staging.
+
+networks:
+  erp-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  keydb_data:
+  minio_data:

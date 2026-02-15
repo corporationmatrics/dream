@@ -1,0 +1,118 @@
+#!/usr/bin/env pwsh
+# Build and run Spring Boot Accounting Service
+# This script uses Docker to compile the Java project
+
+param(
+    [ValidateSet('build', 'run', 'build-run', 'logs', 'stop')]
+    [string]$Action = 'build-run'
+)
+
+$projectPath = Join-Path $PSScriptRoot "erp-accounting"
+Set-Location $projectPath
+
+Write-Host ""
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host "Spring Boot Build & Run Script" -ForegroundColor Cyan
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host ""
+
+# Check Docker
+$docker = Get-Command docker -ErrorAction SilentlyContinue
+if (-not $docker) {
+    Write-Host "ERROR: Docker is not installed or not in PATH" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Docker version: " -ForegroundColor Green -NoNewline
+docker --version
+
+Write-Host ""
+
+function Build-Docker() {
+    Write-Host "[1/3] Building Docker image..." -ForegroundColor Yellow
+    docker build -t erp-accounting:latest . --progress=plain
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[OK] Docker image built successfully" -ForegroundColor Green
+        return $true
+    }
+    else {
+        Write-Host "[FAIL] Docker build failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Run-Docker() {
+    Write-Host "[2/3] Starting Spring Boot service..." -ForegroundColor Yellow
+    Write-Host ""
+    
+    docker run --rm -p 8085:8085 `
+        -e SPRING_DATASOURCE_URL="jdbc:postgresql://host.docker.internal:5432/erp" `
+        -e SPRING_DATASOURCE_USERNAME="postgres" `
+        -e SPRING_DATASOURCE_PASSWORD="postgres" `
+        -e SPRING_REDIS_HOST="host.docker.internal" `
+        -e SPRING_REDIS_PORT="6379" `
+        erp-accounting:latest
+    
+    Write-Host ""
+    Write-Host "[3/3] Container stopped" -ForegroundColor Yellow
+}
+
+function Show-Logs() {
+    Write-Host "Fetching logs from erp-accounting container..." -ForegroundColor Yellow
+    $containerId = docker ps -a --filter "ancestor=erp-accounting:latest" -q | Select-Object -First 1
+    if ($containerId) {
+        docker logs $containerId
+    }
+    else {
+        Write-Host "No containers found" -ForegroundColor Yellow
+    }
+}
+
+function Stop-Container() {
+    Write-Host "Stopping erp-accounting container..." -ForegroundColor Yellow
+    $containers = docker ps --filter "ancestor=erp-accounting:latest" -q
+    if ($containers) {
+        $containers | ForEach-Object {
+            docker stop $_
+        }
+        Write-Host "[OK] Container stopped" -ForegroundColor Green
+    }
+    else {
+        Write-Host "No running containers found" -ForegroundColor Yellow
+    }
+}
+
+# Execute action
+switch ($Action) {
+    'build' {
+        Build-Docker
+    }
+    'run' {
+        Run-Docker
+    }
+    'build-run' {
+        if (Build-Docker) {
+            Run-Docker
+        }
+    }
+    'logs' {
+        Show-Logs
+    }
+    'stop' {
+        Stop-Container
+    }
+    default {
+        Write-Host "Unknown action: $Action" -ForegroundColor Red
+        Write-Host "Valid actions: build, run, build-run, logs, stop" -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host "Command complete" -ForegroundColor Green
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "To verify service health:" -ForegroundColor Yellow
+Write-Host "curl http://localhost:8085/api/actuator/health" -ForegroundColor Green
+Write-Host ""

@@ -1,0 +1,195 @@
+# Defects and Configuration Issues
+
+**Date:** February 8, 2026  
+**Scope:** Whole project (config, DB, Docker, code)
+
+---
+
+## Critical (breaks run or deploy)
+
+### 1. Database migrations conflict and wrong order
+
+**Location:** `erp-database/migrations/`
+
+**Problem:** PostgreSQL `docker-entrypoint-initdb.d` runs scripts in **alphabetical order**. You have:
+
+- `001_create_accounting_schema.sql` – Phase 2 (tenants, users, chart_of_accounts, journal_entries, products, invoices, …)
+- `001_initial_schema.sql` – Phase 1 NestJS (users, products, orders, order_items)
+- `002_accounting_schema.sql` – Phase 1 (gl_accounts, gl_entries, invoices)
+
+Order executed: **001_create…** then **001_initial…** then **002_…**.
+
+- After `001_create_accounting_schema.sql`, tables `users`, `products`, `invoices` already exist.
+- `001_initial_schema.sql` does `CREATE TABLE public.users` and `public.products` → **fails** (relation already exists).
+- `002_accounting_schema.sql` does `CREATE TABLE public.invoices` → **fails** (invoices already exist).
+
+Result: **Init can fail**; only the first script may apply. Schema is also split between two designs:
+
+- **NestJS** expects: `users` (id, email, name, password), `products` (id, name, sku, price, stock), `orders`, `order_items`.
+- **001_create_accounting_schema** has: `users` (user_id, tenant_id, first_name, last_name, password_hash), `products` (product_id, tenant_id, product_code, selling_price, …).
+
+So even if only one script runs, **NestJS and Spring Boot expect different schemas** for the same DB.
+
+**Fix applied (migrate first):**
+
+- Phase 2 accounting tables now live in schema **`accounting`** so they no longer clash with Phase 1 `public` tables.
+- New migration **`010_phase2_accounting_schema.sql`** creates `CREATE SCHEMA accounting` and all Phase 2 tables/enums inside it. It runs **after** Phase 1 scripts (001–006) in alphabetical order.
+- **`001_create_accounting_schema.sql`** was renamed to **`001_create_accounting_schema.sql.bak`** so the init process does not run it.
+- **Spring Boot** `erp-accounting` was configured with **`spring.jpa.properties.hibernate.default_schema=accounting`** so JPA uses the `accounting` schema.
+- Resulting order: `001_initial_schema` → `002_accounting_schema` → `003_reviews_table` → `004_wishlist_table` → `005_*` → `006_*` → `010_phase2_accounting_schema` → `20_create_keycloak_db`.
+
+---
+
+### 2. Spring Boot health check URL wrong
+
+**Location:** `docker-compose.yml` (spring-boot healthcheck), `erp-accounting/Dockerfile` (HEALTHCHECK)
+
+**Problem:** Both use:
+
+```yaml
+curl -f http://localhost:8085/actuator/health
+```
+
+- **Actuator is not in the project:** `erp-accounting/pom.xml` has no `spring-boot-starter-actuator` → `/actuator/health` returns **404**.
+- The app exposes a custom health endpoint: `HealthController` at **`/api/api/v1/health`** (context-path `/api` + `@RequestMapping("/api/v1")` + `@GetMapping("/health")`).
+
+So Docker health checks are calling a non-existent URL and will **fail** (container marked unhealthy).
+
+**Fix applied:** Context path set to `/`; health at `/api/v1/health`. Docker Compose and Dockerfile health checks updated.
+
+---
+
+### 3. Spring Boot Redis not overridden in Docker
+
+**Location:** `docker-compose.yml` (spring-boot service), `erp-accounting/src/main/resources/application.yml`
+
+**Problem:** Compose sets:
+
+```yaml
+KEYDB_HOST: keydb
+KEYDB_PORT: 6379
+```
+
+Spring Boot reads **`spring.redis.host`** and **`spring.redis.port`**. These are overridden by env vars **`SPRING_REDIS_HOST`** and **`SPRING_REDIS_PORT`**, not `KEYDB_HOST`/`KEYDB_PORT`. So `KEYDB_*` is **ignored**; the app keeps using `application.yml`:
+
+```yaml
+spring.redis.host: host.docker.internal
+spring.redis.port: 6379
+```
+
+So in Docker the app talks to the host’s Redis (if any), not the `keydb` container. On machines without Redis on the host, cache can fail or behave inconsistently.
+
+**Fix:** In `docker-compose.yml`, set `SPRING_REDIS_HOST=keydb` and `SPRING_REDIS_PORT=6379` (see below).
+
+---
+
+### 4. erp-accounting application.yml points to wrong DB for “default” run
+
+**Location:** `erp-accounting/src/main/resources/application.yml`
+
+**Problem:** YAML has:
+
+```yaml
+spring.datasource.url: jdbc:postgresql://hamatrix-postgres:5432/erp
+spring.datasource.username: hamatrix_user
+spring.datasource.password: hamatrix_secure_123
+```
+
+- **Docker Compose** defines service `postgres`, container `erp-postgres`, user `postgres`, password `postgres`, DB `erp`. Compose overrides with `SPRING_DATASOURCE_*`, so **inside Docker** the app connects correctly.
+- **Local run** (no env): app uses `hamatrix-postgres` / `hamatrix_user` / `hamatrix_secure_123`. That host and user do not exist in this repo → **local run fails** unless you change YAML or use a profile.
+
+**Fix applied:** Added `application-local.yml` (localhost/postgres/erp, Redis localhost). Run with `--spring.profiles.active=local`.
+
+---
+
+### 5. NestJS (erp-api) .env.example mismatches Docker and docs
+
+**Location:** `erp-api/.env.example`
+
+**Problems:**
+
+- **Database name:** `DATABASE_NAME=erp_platform`. Docker Compose creates DB **`erp`**, not `erp_platform` → connection fails if using .env.example as-is.
+- **Port:** `APP_PORT=3000`. Docs (e.g. PROJECT_OVERVIEW) say backend runs on **3002**; frontend is **3000**. So default in .env.example **conflicts with Next.js** and doc.
+
+**Fix:** Set `DATABASE_NAME=erp` and `APP_PORT=3002` in `.env.example` (and document).
+
+---
+
+## High (security or wrong behavior)
+
+### 6. Spring Boot: all endpoints likely require auth (401)
+
+**Location:** `erp-accounting` (Spring Security)
+
+**Problem:** `spring-boot-starter-security` is on classpath and there is **no** `SecurityFilterChain` or `@EnableWebSecurity` configuration. Default is “authenticate all requests”. There is no form login user or JWT/Keycloak config in this service, so **all REST calls (including health) can return 401 Unauthorized**.
+
+**Fix:** Add a security config that:
+
+- Allows unauthenticated access to health (and optionally Actuator health), and
+- Configures JWT or Keycloak for the rest of the API (if required).
+
+---
+
+### 7. Context path double “api” in Spring Boot
+
+**Location:** `erp-accounting/src/main/resources/application.yml`, controllers
+
+**Problem:** `server.servlet.context-path: /api` and controllers use `@RequestMapping("/api/v1/...")`. So effective path is **`/api` + `/api/v1/...`** = `/api/api/v1/...`. External docs or frontends that assume `/api/v1/...` will call the wrong path.
+
+**Fix applied:** Set `server.servlet.context-path: /` so API is at `/api/v1/...` (e.g. `/api/v1/health`, `/api/v1/journal-entries`).
+
+---
+
+## Medium (confusing or technical debt)
+
+### 8. Controllers.java is a dead stub
+
+**Location:** `erp-accounting/src/main/java/com/erp/accounting/controller/Controllers.java`
+
+**Problem:** File only contains comments pointing to real controller classes. It’s not a controller itself and can confuse navigation. Optional: remove it or replace with a short “Index of REST controllers” doc in code or README.
+
+---
+
+### 9. erp-ml Docker build (Poetry v2 / cache)
+
+**Location:** `erp-ml/`, Docker build
+
+**Problem:** Described in `EXECUTIVE_SUMMARY.md`: old Docker cache can run removed `poetry export` (Poetry v2). Build can fail until cache is cleared and build uses current Dockerfile (PEP 517).
+
+**Fix:** Use `docker build --no-cache` or `docker builder prune` when building erp-ml; document in README/CI.
+
+---
+
+### 10. NestJS and FastAPI not in docker-compose
+
+**Location:** Root `docker-compose.yml`
+
+**Problem:** Only Postgres, Keycloak, KeyDB, MinIO, and Spring Boot are defined. **erp-api** (NestJS) and **erp-ml** (FastAPI) are not in Compose, so “full stack” requires running them separately. Not a bug but easy to miss when following “Getting Started”.
+
+**Fix:** Add services for erp-api and erp-ml, or document clearly: “Start Compose, then run `erp-api` and `erp-ml` locally.”
+
+---
+
+## Summary table
+
+| # | Severity   | Area            | Issue |
+|---|------------|-----------------|--------|
+| 1 | Critical   | DB migrations   | Conflicting 001_* scripts; NestJS vs Phase 2 schema mismatch |
+| 2 | Critical   | Docker          | Health check uses /actuator/health (404); no Actuator |
+| 3 | Critical   | Docker          | Redis: KEYDB_* ignored; need SPRING_REDIS_* |
+| 4 | Critical   | Config          | application.yml DB host/user for default run wrong |
+| 5 | Critical   | Config          | erp-api .env.example: wrong DB name and port |
+| 6 | High       | Security        | Spring Boot: all endpoints require auth → **Fixed:** SecurityConfig added |
+| 7 | High       | API             | Context path + mapping = /api/api/v1/... → **Fixed:** context-path /, API at /api/v1 |
+| 8 | Medium     | Code            | Controllers.java stub only → **Fixed:** file removed |
+| 9 | Medium     | Build           | erp-ml Docker cache / Poetry v2 |
+| 10| Medium     | Docs/process    | NestJS/FastAPI not in Compose → **Fixed:** erp-api + erp-ml added to docker-compose |
+
+---
+
+## Quick fixes applied (in repo)
+
+- **docker-compose.yml:** Health check updated to `/api/api/v1/health`; added `SPRING_REDIS_HOST` and `SPRING_REDIS_PORT` for Spring Boot.
+- **erp-api/.env.example:** `DATABASE_NAME=erp`, `APP_PORT=3002`.
+
+Migration ordering, Spring Security, and context-path require design decisions and are left for you to implement as needed.

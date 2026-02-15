@@ -1,0 +1,207 @@
+# Docker Compose for Production / Staging / CI-CD Testing
+# This file includes ALL services (foundation + microservices + frontend)
+# For LOCAL DEVELOPMENT, use: docker-compose.yml (foundation only)
+# 
+# Usage:
+#   docker-compose -f docker-compose.production.yml up -d
+#
+# This requires all services to be pre-built:
+#   docker build -t erp-accounting:latest ./erp-accounting
+#   docker build -t erp-api:latest ./erp-api
+#   docker build -t erp-ml:latest ./erp-ml
+#   docker build -t erp-web:latest ./erp-web
+
+version: '3.8'
+
+services:
+  # ==================== FOUNDATION SERVICES ====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: erp-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: erp
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./erp-database/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.7
+    container_name: erp-keycloak
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
+      KC_DB: postgres
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/postgres
+      KC_DB_POOL_INITIAL_SIZE: "10"
+      KC_DB_POOL_MAX_SIZE: "20"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+      KC_HOSTNAME: localhost
+      KC_FEATURES: "scripts,token-exchange,dynamic-scopes"
+    command: ["start-dev"]
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: erp-keydb
+    ports:
+      - "6379:6379"
+    volumes:
+      - keydb_data:/data
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: erp-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - erp-network
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== MICROSERVICES ====================
+  spring-boot:
+    image: erp-accounting:latest
+    container_name: erp-spring-boot
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/erp
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_PROFILES_ACTIVE: production
+      SERVER_PORT: 8085
+      SPRING_REDIS_HOST: keydb
+      SPRING_REDIS_PORT: "6379"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: erp
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keydb:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  erp-api:
+    image: erp-api:latest
+    container_name: erp-api
+    environment:
+      APP_PORT: 3002
+      NODE_ENV: production
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_NAME: erp
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_EXPIRATION: 3600
+      CORS_ORIGIN: http://localhost:3000
+      ML_API_URL: http://erp-ml:8000
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      erp-ml:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  erp-ml:
+    image: erp-ml:latest
+    container_name: erp-ml
+    environment:
+      API_PORT: 8000
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "8000:8000"
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  erp-web:
+    image: erp-web:latest
+    container_name: erp-web
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:3002
+    depends_on:
+      erp-api:
+        condition: service_healthy
+    networks:
+      - erp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  erp-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  keydb_data:
+  minio_data:

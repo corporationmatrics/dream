@@ -1,0 +1,38 @@
+# EDI Protocol Layer - B2B Document Exchange (JSON-based)
+# Handles PO → Invoice → Ledger flow with zero-manual intervention
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy project files
+COPY pyproject.toml poetry.lock* ./
+COPY src/ ./src/
+COPY edi/ ./edi/
+
+# Install Python dependencies
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install poetry && \
+    poetry config virtualenvs.create false && \
+    poetry install --no-interaction --no-ansi && \
+    pip install fastapi uvicorn pydantic pymongo redis pika sqlalchemy psycopg2-binary
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8050/health || exit 1
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV FASTAPI_PORT=8050
+
+# Expose port
+EXPOSE 8050
+
+# Start the EDI protocol service
+CMD ["uvicorn", "edi.main:app", "--host", "0.0.0.0", "--port", "8050", "--reload"]

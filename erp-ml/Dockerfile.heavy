@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.4
+# Heavy-deps image: builds & installs all large wheels (CUDA/ML/OCR deps)
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
+
+WORKDIR /wheels_build
+
+# Install system libs required by ML/OCR wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    curl \
+    libpq-dev \
+    libopenblas-dev \
+    libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pyproject and package sources so wheel building can run
+COPY pyproject.toml poetry.lock* ./
+COPY erp_ml/ ./erp_ml/
+
+# Build wheels into /wheels and install them into the image
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip wheel --wheel-dir=/wheels . && \
+    pip install --no-index --find-links=/wheels /wheels/*.whl
+
+# Final image already has all heavy deps + app installed
+WORKDIR /app
+
+CMD ["/bin/sh","-c","echo 'erp-ml-heavy image built' && sleep infinity"]
